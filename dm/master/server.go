@@ -495,6 +495,7 @@ func (s *Server) QueryStatus(ctx context.Context, req *pb.QueryStatusListRequest
 			return &pb.QueryStatusListResponse{
 				Result: false,
 				Msg:    fmt.Sprintf("%s relevant worker-client not found", strings.Join(invalidWorkers, ", ")),
+				Stage:  pb.Stage_Running,
 			}, nil
 		}
 		workers = req.Workers
@@ -505,6 +506,7 @@ func (s *Server) QueryStatus(ctx context.Context, req *pb.QueryStatusListRequest
 			return &pb.QueryStatusListResponse{
 				Result: false,
 				Msg:    fmt.Sprintf("task %s has no workers or not exist, can try `refresh-worker-tasks` cmd first", req.Name),
+				Stage:  pb.Stage_Running,
 			}, nil
 		}
 	} else {
@@ -530,6 +532,7 @@ func (s *Server) QueryStatus(ctx context.Context, req *pb.QueryStatusListRequest
 	resp := &pb.QueryStatusListResponse{
 		Result:  true,
 		Workers: workerResps,
+		Stage:  pb.Stage_Running,
 	}
 	return resp, nil
 }
