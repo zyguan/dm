@@ -478,6 +478,14 @@ func (s *Server) UpdateTask(ctx context.Context, req *pb.UpdateTaskRequest) (*pb
 	}, nil
 }
 
+func (s *Server) QueryTaskConfig(ctx context.Context, req *pb.TaskConfigRequest) (*pb.TaskConfigResponse, error) {
+	return &pb.TaskConfigResponse {
+		Result: true,
+		Msg:   "",
+		Config: "hello dm",
+	}, nil
+}
+
 // QueryStatus implements MasterServer.QueryStatus
 func (s *Server) QueryStatus(ctx context.Context, req *pb.QueryStatusListRequest) (*pb.QueryStatusListResponse, error) {
 	log.L().Info("", zap.Stringer("payload", req), zap.String("request", "QueryStatus"))

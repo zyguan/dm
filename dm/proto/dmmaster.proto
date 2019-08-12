@@ -61,6 +61,23 @@ service Master {
 
     // CheckTask checks legality of task configuration
     rpc CheckTask(CheckTaskRequest) returns (CheckTaskResponse) {}
+
+    // QueryTaskConfig ...
+    rpc QueryTaskConfig(TaskConfigRequest) returns (TaskConfigResponse) {
+option (google.api.http) = { 
+            get: "/apis/alpha/configs/{name}"
+        };
+    }
+}
+
+message TaskConfigRequest {
+    string name = 1;
+}
+
+message TaskConfigResponse {
+    bool result = 1;
+    string msg  = 2;
+    string config  = 3;
 }
 
 message MigrateWorkerRelayRequest {
