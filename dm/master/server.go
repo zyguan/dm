@@ -30,6 +30,7 @@ import (
 	"github.com/soheilhy/cmux"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	//"https://github.com/polaris1119/bitmap"
 
 	"github.com/pingcap/dm/checker"
 	"github.com/pingcap/dm/dm/common"
@@ -479,9 +480,9 @@ func (s *Server) UpdateTask(ctx context.Context, req *pb.UpdateTaskRequest) (*pb
 }
 
 func (s *Server) QueryTaskConfig(ctx context.Context, req *pb.TaskConfigRequest) (*pb.TaskConfigResponse, error) {
-	return &pb.TaskConfigResponse {
+	return &pb.TaskConfigResponse{
 		Result: true,
-		Msg:   "",
+		Msg:    "",
 		Config: "hello dm",
 	}, nil
 }
@@ -537,16 +538,47 @@ func (s *Server) QueryStatus(ctx context.Context, req *pb.QueryStatusListRequest
 	for _, worker := range workers {
 		workerResps = append(workerResps, workerRespMap[worker])
 	}
+
+	taskStages := JudgeTaskStage(workerResps)
 	resp := &pb.QueryStatusListResponse{
 		Result:  true,
 		Workers: workerResps,
-		Stage:  pb.Stage_Running,
+		Stage:   taskStages,
 	}
 	return resp, nil
 }
 
-func (s *Server) JudgeTaskStage() map[string]pb.Stage {
+func JudgeTaskStage(workerStatus []*pb.QueryStatusResponse) map[string]pb.Stage {
+	//taskStages := make(map[string][]pb.Stage)
+	taskStages := make(map[string]byte)
+	taskStage := make(map[string]pb.Stage)
 
+	for _, status := range workerStatus {
+		for _, subTaskStatus := range status.SubTaskStatus {
+			if _, ok := taskStages[subTaskStatus.Name]; !ok {
+				//stages = append(stages, subTaskStatus.Stage)
+				taskStages[subTaskStatus.Name] = 0
+				//stages.SetBit(uint64(subTaskStatus.Stage), 1)
+			}
+			taskStages[subTaskStatus.Name] |= 0x01 << uint64(subTaskStatus.Stage)
+		}
+	}
+
+	for task, stageByte := range taskStages {
+		if stageByte == 0x01<<uint64(pb.Stage_Finished) {
+			taskStage[task] = pb.Stage_Finished
+		} else if stageByte == 0x01<<uint64(pb.Stage_Stopped) {
+			taskStage[task] = pb.Stage_Stopped
+		} else if stageByte == 0x01<<uint64(pb.Stage_New) {
+			taskStage[task] = pb.Stage_New
+		} else if stageByte>>uint64(pb.Stage_Paused)&0x01 == uint8(1) {
+			taskStage[task] = pb.Stage_Paused
+		} else {
+			taskStage[task] = pb.Stage_Running
+		}
+	}
+
+	return taskStage
 }
 
 // QueryError implements MasterServer.QueryError

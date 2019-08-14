@@ -1487,3 +1487,30 @@ func (t *testMaster) TestFetchWorkerDDLInfo(c *check.C) {
 	}()
 	wg.Wait()
 }
+
+func (t *testMaster) TestJudgeTaskStage(c *check.C) {
+	testCases := []struct {
+		stages []pb.Stage
+		stage  pb.Stage
+	}{
+		{
+			[]pb.Stage{pb.Stage_Finished},
+			pb.Stage_Finished,
+		}, {
+			[]pb.Stage{pb.Stage_Finished, pb.Stage_Running},
+			pb.Stage_Running,
+		},
+	}
+
+	for _, testCase := range testCases {
+		workerStatus := make([]*pb.QueryStatusResponse, len(testCase.stages))
+		for i, stage := range testCase.stages {
+			subTaskStatus := &pb.SubTaskStatus{Name: "test", Stage: stage}
+			workerStatus[i] = &pb.QueryStatusResponse{SubTaskStatus: []*pb.SubTaskStatus{subTaskStatus}}
+		}
+
+		stage := JudgeTaskStage(workerStatus)["test"]
+		c.Assert(stage, check.Equals, testCase.stage)
+	}
+
+}
