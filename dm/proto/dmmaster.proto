@@ -152,7 +152,7 @@ message QueryStatusListResponse {
     bool result = 1;
     string msg = 2;
     repeated QueryStatusResponse workers = 3;
-    Stage stage = 4;
+    map<string, Stage> stage = 4;
 }
 
 message QueryErrorListRequest {
