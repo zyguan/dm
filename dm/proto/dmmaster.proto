@@ -63,6 +63,16 @@ service Master {
     rpc CheckTask(CheckTaskRequest) returns (CheckTaskResponse) {}
 }
 
+message TaskConfigRequest {
+    string name = 1;
+}
+
+message TaskConfigResponse {
+    bool result = 1;
+    string msg  = 2;
+    string config  = 3;
+}
+
 message MigrateWorkerRelayRequest {
     string BinlogName = 1;
     uint32 BinlogPos = 2;
@@ -135,6 +145,7 @@ message QueryStatusListResponse {
     bool result = 1;
     string msg = 2;
     repeated QueryStatusResponse workers = 3;
+    map<string, Stage> stage = 4;
 }
 
 message QueryErrorListRequest {

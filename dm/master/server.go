@@ -530,11 +530,50 @@ func (s *Server) QueryStatus(ctx context.Context, req *pb.QueryStatusListRequest
 	for _, worker := range workers {
 		workerResps = append(workerResps, workerRespMap[worker])
 	}
+
+	taskStages := JudgeTaskStage(workerResps)
 	resp := &pb.QueryStatusListResponse{
 		Result:  true,
 		Workers: workerResps,
+		Stage:   taskStages,
 	}
 	return resp, nil
+}
+
+// JudgeTaskStage judges every task's stage according to their subtasks' stage:
+// 1. Finished: all subtasks is in Finished stage
+// 2. Stopped: all subtasks is in Stopped stage
+// 3. New: all subtasks is in New stage
+// 4. Paused: any one of the subtasks is in Paused stage
+// 5. Running: except 1 - 4 situations
+func JudgeTaskStage(workerStatus []*pb.QueryStatusResponse) map[string]pb.Stage {
+	subtaskStages := make(map[string]byte)
+	taskStage := make(map[string]pb.Stage)
+
+	for _, status := range workerStatus {
+		for _, subTaskStatus := range status.SubTaskStatus {
+			if _, ok := subtaskStages[subTaskStatus.Name]; !ok {
+				subtaskStages[subTaskStatus.Name] = 0
+			}
+			subtaskStages[subTaskStatus.Name] |= 0x01 << uint64(subTaskStatus.Stage)
+		}
+	}
+
+	for task, stageByte := range subtaskStages {
+		if stageByte == 0x01<<uint64(pb.Stage_Finished) {
+			taskStage[task] = pb.Stage_Finished
+		} else if stageByte == 0x01<<uint64(pb.Stage_Stopped) {
+			taskStage[task] = pb.Stage_Stopped
+		} else if stageByte == 0x01<<uint64(pb.Stage_New) {
+			taskStage[task] = pb.Stage_New
+		} else if stageByte>>uint64(pb.Stage_Paused)&0x01 == uint8(1) {
+			taskStage[task] = pb.Stage_Paused
+		} else {
+			taskStage[task] = pb.Stage_Running
+		}
+	}
+
+	return taskStage
 }
 
 // QueryError implements MasterServer.QueryError
