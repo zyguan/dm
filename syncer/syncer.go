@@ -140,6 +140,8 @@ type Syncer struct {
 	binlogType       BinlogType
 	streamer         streamer.Streamer
 
+	enableRelay bool
+
 	wg    sync.WaitGroup
 	jobWg sync.WaitGroup
 
@@ -236,6 +238,7 @@ func NewSyncer(cfg *config.SubTaskConfig, enableRelay bool) *Syncer {
 	syncer.tracer = tracing.GetTracer()
 	syncer.setTimezone()
 	syncer.addJobFunc = syncer.addJob
+	syncer.enableRelay = enableRelay
 
 	syncer.checkpoint = NewRemoteCheckPoint(syncer.tctx, cfg, syncer.checkpointID())
 
@@ -479,13 +482,10 @@ func (s *Syncer) resetReplicationSyncer() {
 		}
 	}
 	// re-create new streamerProducer
-	switch s.binlogType {
-	case RemoteBinlog:
-		s.streamerProducer = &remoteBinlogReader{replication.NewBinlogSyncer(s.syncCfg), s.tctx, s.cfg.EnableGTID}
-	case LocalBinlog:
+	if s.enableRelay {
 		s.streamerProducer = &localBinlogReader{streamer.NewBinlogReader(s.tctx, &streamer.BinlogReaderConfig{RelayDir: s.cfg.RelayDir, Timezone: s.timezone})}
-	default:
-		s.tctx.L().Error("init streamerProducer with un-recognized binlogType")
+	} else {
+		s.streamerProducer = &remoteBinlogReader{replication.NewBinlogSyncer(s.syncCfg), s.tctx, s.cfg.EnableGTID}
 	}
 }
 
