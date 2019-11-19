@@ -56,16 +56,23 @@ type binlogPoint struct {
 	mysql.Position
 
 	flushedPos mysql.Position // pos which flushed permanently
+
+	flavor         string
+	gtidSet        mysql.GTIDSet
+	flushedGtidSet mysql.GTIDSet
 }
 
-func newBinlogPoint(pos mysql.Position, flushedPos mysql.Position) *binlogPoint {
+func newBinlogPoint(flavor string, pos, flushedPos mysql.Position, gtidSet, flushedGtidSet mysql.GTIDSet) *binlogPoint {
 	return &binlogPoint{
-		Position:   pos,
-		flushedPos: flushedPos,
+		flavor:         flavor,
+		Position:       pos,
+		flushedPos:     flushedPos,
+		gtidSet:        gtidSet,
+		flushedGtidSet: flushedGtidSet,
 	}
 }
 
-func (b *binlogPoint) save(pos mysql.Position) error {
+func (b *binlogPoint) save(pos mysql.Position, gtidSet mysql.GTIDSet) error {
 	b.Lock()
 	defer b.Unlock()
 	if pos.Compare(b.Position) < 0 {
@@ -73,6 +80,9 @@ func (b *binlogPoint) save(pos mysql.Position) error {
 		return terror.ErrCheckpointSaveInvalidPos.Generate(pos, b.Position)
 	}
 	b.Position = pos
+
+	// TODO: compare gtidSet
+	b.gtidSet = gtidSet
 	return nil
 }
 
@@ -80,12 +90,14 @@ func (b *binlogPoint) flush() {
 	b.Lock()
 	defer b.Unlock()
 	b.flushedPos = b.Position
+	b.flushedGtidSet = b.gtidSet
 }
 
 func (b *binlogPoint) rollback() {
 	b.Lock()
 	defer b.Unlock()
 	b.Position = b.flushedPos
+	b.gtidSet = b.flushedGtidSet
 }
 
 func (b *binlogPoint) outOfDate() bool {
@@ -221,7 +233,7 @@ func NewRemoteCheckPoint(tctx *tcontext.Context, cfg *config.SubTaskConfig, id s
 		table:       fmt.Sprintf("%s_syncer_checkpoint", cfg.Name),
 		id:          id,
 		points:      make(map[string]map[string]*binlogPoint),
-		globalPoint: newBinlogPoint(minCheckpoint, minCheckpoint),
+		globalPoint: newBinlogPoint(cfg.Flavor, minCheckpoint, minCheckpoint, nil, nil),
 		tctx:        newtctx,
 	}
 
@@ -265,7 +277,7 @@ func (cp *RemoteCheckPoint) Clear() error {
 		return err
 	}
 
-	cp.globalPoint = newBinlogPoint(minCheckpoint, minCheckpoint)
+	cp.globalPoint = newBinlogPoint(minCheckpoint, minCheckpoint, nil, nil)
 
 	cp.points = make(map[string]map[string]*binlogPoint)
 
@@ -481,6 +493,7 @@ func (cp *RemoteCheckPoint) createTable() error {
 			cp_table VARCHAR(128) NOT NULL,
 			binlog_name VARCHAR(128),
 			binlog_pos INT UNSIGNED,
+			gtid_set VARCHAR(256),
 			is_global BOOLEAN,
 			create_time timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			update_time timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -494,7 +507,7 @@ func (cp *RemoteCheckPoint) createTable() error {
 
 // Load implements CheckPoint.Load
 func (cp *RemoteCheckPoint) Load() error {
-	query := fmt.Sprintf("SELECT `cp_schema`, `cp_table`, `binlog_name`, `binlog_pos`, `is_global` FROM `%s`.`%s` WHERE `id`='%s'", cp.schema, cp.table, cp.id)
+	query := fmt.Sprintf("SELECT `cp_schema`, `cp_table`, `binlog_name`, `binlog_pos`, `gtid_set`, `is_global` FROM `%s`.`%s` WHERE `id`='%s'", cp.schema, cp.table, cp.id)
 	rows, err := cp.dbConn.querySQL(cp.tctx, query)
 	defer func() {
 		if rows != nil {
@@ -518,10 +531,11 @@ func (cp *RemoteCheckPoint) Load() error {
 		cpTable    string
 		binlogName string
 		binlogPos  uint32
+		gtidSet    string
 		isGlobal   bool
 	)
 	for rows.Next() {
-		err := rows.Scan(&cpSchema, &cpTable, &binlogName, &binlogPos, &isGlobal)
+		err := rows.Scan(&cpSchema, &cpTable, &binlogName, &binlogPos, &gtidSet, &isGlobal)
 		if err != nil {
 			return terror.WithScope(terror.DBErrorAdapt(err, terror.ErrDBDriverError), terror.ScopeDownstream)
 		}
@@ -585,16 +599,16 @@ func (cp *RemoteCheckPoint) LoadMeta() error {
 }
 
 // genUpdateSQL generates SQL and arguments for update checkpoint
-func (cp *RemoteCheckPoint) genUpdateSQL(cpSchema, cpTable string, binlogName string, binlogPos uint32, isGlobal bool) (string, []interface{}) {
+func (cp *RemoteCheckPoint) genUpdateSQL(cpSchema, cpTable string, binlogName string, binlogPos uint32, gtidSet string, isGlobal bool) (string, []interface{}) {
 	// use `INSERT INTO ... ON DUPLICATE KEY UPDATE` rather than `REPLACE INTO`
 	// to keep `create_time`, `update_time` correctly
-	sql2 := fmt.Sprintf("INSERT INTO `%s`.`%s` (`id`, `cp_schema`, `cp_table`, `binlog_name`, `binlog_pos`, `is_global`) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE `binlog_name`=?, `binlog_pos`=?",
+	sql2 := fmt.Sprintf("INSERT INTO `%s`.`%s` (`id`, `cp_schema`, `cp_table`, `binlog_name`, `binlog_pos`, `gtid_set`, `is_global`) VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE `binlog_name`=?, `binlog_pos`=?",
 		cp.schema, cp.table)
 	if isGlobal {
 		cpSchema = globalCpSchema
 		cpTable = globalCpTable
 	}
-	args := []interface{}{cp.id, cpSchema, cpTable, binlogName, binlogPos, isGlobal, binlogName, binlogPos}
+	args := []interface{}{cp.id, cpSchema, cpTable, binlogName, binlogPos, gtidSet, isGlobal, binlogName, binlogPos}
 	return sql2, args
 }
 

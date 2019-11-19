@@ -112,6 +112,8 @@ func (r *remoteBinlogReader) generateStreamer(pos mysql.Position) (streamer.Stre
 		lastSlaveConnectionID := r.reader.LastConnectionID()
 		r.tctx.L().Info("last slave connection", zap.Uint32("connection ID", lastSlaveConnectionID))
 	}()
+
+	// FIXME: can enable GTID
 	if r.EnableGTID {
 		// NOTE: our (per-table based) checkpoint does not support GTID yet
 		return nil, terror.ErrSyncerUnitRemoteSteamerWithGTID.Generate()
