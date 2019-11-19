@@ -216,7 +216,7 @@ type Syncer struct {
 }
 
 // NewSyncer creates a new Syncer.
-func NewSyncer(cfg *config.SubTaskConfig) *Syncer {
+func NewSyncer(cfg *config.SubTaskConfig, enableRelay bool) *Syncer {
 	syncer := new(Syncer)
 	syncer.cfg = cfg
 	syncer.tctx = tcontext.Background().WithLogger(log.With(zap.String("task", cfg.Name), zap.String("unit", "binlog replication")))

@@ -35,7 +35,7 @@ const (
 	GHOST = "gh-ost"
 	PT    = "pt"
 
-	LocalBinlog = "local"
+	LocalBinlog  = "local"
 	RemoteBinlog = "remote"
 )
 
@@ -246,10 +246,10 @@ type TaskConfig struct {
 	HeartbeatReportInterval int    `yaml:"heartbeat-report-interval"`
 	Timezone                string `yaml:"timezone"`
 
-	// BinlogType is "local": dm-worker will pull binlog from MySQL/MariaDB, and then write to local file, 
+	// BinlogType is "local": dm-worker will pull binlog from MySQL/MariaDB, and then write to local file,
 	// replication unit read binlog from local file.
 	// BinlogType is "remote"(default value): replication unit read binlog from remote MySQL/MariaDB directly.
-	BinlogType              string   `yaml:"binlog-type"`
+	BinlogType string `yaml:"binlog-type"`
 
 	// handle schema/table name mode, and only for schema/table name
 	// if case insensitive, we would convert schema/table name to lower case

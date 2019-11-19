@@ -35,7 +35,7 @@ import (
 )
 
 // createUnits creates process units base on task mode
-func createUnits(cfg *config.SubTaskConfig) []unit.Unit {
+func createUnits(cfg *config.SubTaskConfig, enableRelay bool) []unit.Unit {
 	failpoint.Inject("mockCreateUnitsDumpOnly", func(_ failpoint.Value) {
 		log.L().Info("create mock worker units with dump unit only", zap.String("failpoint", "mockCreateUnitsDumpOnly"))
 		failpoint.Return([]unit.Unit{mydumper.NewMydumper(cfg)})
@@ -46,13 +46,13 @@ func createUnits(cfg *config.SubTaskConfig) []unit.Unit {
 	case config.ModeAll:
 		us = append(us, mydumper.NewMydumper(cfg))
 		us = append(us, loader.NewLoader(cfg))
-		us = append(us, syncer.NewSyncer(cfg))
+		us = append(us, syncer.NewSyncer(cfg, enableRelay))
 	case config.ModeFull:
 		// NOTE: maybe need another checker in the future?
 		us = append(us, mydumper.NewMydumper(cfg))
 		us = append(us, loader.NewLoader(cfg))
 	case config.ModeIncrement:
-		us = append(us, syncer.NewSyncer(cfg))
+		us = append(us, syncer.NewSyncer(cfg, enableRelay))
 	default:
 		log.L().Error("unsupported task mode", zap.String("subtask", cfg.Name), zap.String("task mode", cfg.Mode))
 	}
@@ -86,15 +86,15 @@ type SubTask struct {
 }
 
 // NewSubTask creates a new SubTask
-func NewSubTask(cfg *config.SubTaskConfig) *SubTask {
-	return NewSubTaskWithStage(cfg, pb.Stage_New)
+func NewSubTask(cfg *config.SubTaskConfig, enableRelay bool) *SubTask {
+	return NewSubTaskWithStage(cfg, pb.Stage_New, enableRelay)
 }
 
 // NewSubTaskWithStage creates a new SubTask with stage
-func NewSubTaskWithStage(cfg *config.SubTaskConfig, stage pb.Stage) *SubTask {
+func NewSubTaskWithStage(cfg *config.SubTaskConfig, stage pb.Stage, enableRelay bool) *SubTask {
 	st := SubTask{
 		cfg:     cfg,
-		units:   createUnits(cfg),
+		units:   createUnits(cfg, enableRelay),
 		stage:   stage,
 		l:       log.With(zap.String("subtask", cfg.Name)),
 		DDLInfo: make(chan *pb.DDLInfo, 1),
@@ -617,6 +617,7 @@ func (st *SubTask) ClearDDLInfo() {
 // Currently there is only one wait condition
 // from Load unit to Sync unit, wait for relay-log catched up with mydumper binlog position.
 func (st *SubTask) unitTransWaitCondition() error {
+	// TODO: when enable relay is false, don't need wait
 	pu := st.PrevUnit()
 	cu := st.CurrUnit()
 	if pu != nil && pu.Type() == pb.UnitType_Load && cu.Type() == pb.UnitType_Sync {
