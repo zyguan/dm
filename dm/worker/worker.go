@@ -832,7 +832,7 @@ Loop:
 					break
 				}
 
-				if w.relayPurger.Purging() {
+				if w.cfg.EnableRelay && w.relayPurger.Purging() {
 					if retryCnt < maxRetryCount {
 						retryCnt++
 						w.l.Warn("relay log purger is purging, cannot start subtask, would try again later", zap.String("task", opLog.Task.Name))

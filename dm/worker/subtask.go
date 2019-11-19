@@ -617,12 +617,16 @@ func (st *SubTask) ClearDDLInfo() {
 // Currently there is only one wait condition
 // from Load unit to Sync unit, wait for relay-log catched up with mydumper binlog position.
 func (st *SubTask) unitTransWaitCondition() error {
-	// TODO: when enable relay is false, don't need wait
 	pu := st.PrevUnit()
 	cu := st.CurrUnit()
 	if pu != nil && pu.Type() == pb.UnitType_Load && cu.Type() == pb.UnitType_Sync {
 		st.l.Info("wait condition between two units", zap.Stringer("previous unit", pu.Type()), zap.Stringer("unit", cu.Type()))
 		hub := GetConditionHub()
+
+		if !hub.w.cfg.EnableRelay {
+			return nil
+		}
+
 		waitRelayCatchupTimeout := 5 * time.Minute
 		ctx, cancel := context.WithTimeout(hub.w.ctx, waitRelayCatchupTimeout)
 		defer cancel()

@@ -206,7 +206,7 @@ func (s *testSyncerSuite) TestresolveDDLSQL(c *C) {
 			DoDBs: []string{"s1"},
 		},
 	}
-	syncer := NewSyncer(cfg)
+	syncer := NewSyncer(cfg, true)
 
 	var err error
 	syncer.tableRouter, err = router.NewTableRouter(false, []*router.TableRule{
@@ -334,7 +334,7 @@ func (s *testSyncerSuite) TestParseDDLSQL(c *C) {
 			IgnoreDBs: []string{"ignore_db"},
 		},
 	}
-	syncer := NewSyncer(cfg)
+	syncer := NewSyncer(cfg, true)
 
 	db, mock, err := sqlmock.New()
 	c.Assert(err, IsNil)
