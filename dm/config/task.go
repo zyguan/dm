@@ -34,6 +34,9 @@ import (
 const (
 	GHOST = "gh-ost"
 	PT    = "pt"
+
+	LocalBinlog = "local"
+	RemoteBinlog = "remote"
 )
 
 // default config item values
@@ -243,6 +246,11 @@ type TaskConfig struct {
 	HeartbeatReportInterval int    `yaml:"heartbeat-report-interval"`
 	Timezone                string `yaml:"timezone"`
 
+	// BinlogType is "local": dm-worker will pull binlog from MySQL/MariaDB, and then write to local file, 
+	// replication unit read binlog from local file.
+	// BinlogType is "remote"(default value): replication unit read binlog from remote MySQL/MariaDB directly.
+	BinlogType              string   `yaml:"binlog-type"`
+
 	// handle schema/table name mode, and only for schema/table name
 	// if case insensitive, we would convert schema/table name to lower case
 	CaseSensitive bool `yaml:"case-sensitive"`
@@ -337,6 +345,10 @@ func (c *TaskConfig) adjust() error {
 
 	if c.OnlineDDLScheme != "" && c.OnlineDDLScheme != PT && c.OnlineDDLScheme != GHOST {
 		return terror.ErrConfigOnlineSchemeNotSupport.Generate(c.OnlineDDLScheme)
+	}
+
+	if len(c.BinlogType) == 0 {
+		c.BinlogType = RemoteBinlog
 	}
 
 	if c.TargetDB == nil {
@@ -471,7 +483,7 @@ func (c *TaskConfig) SubTaskConfigs(sources map[string]DBConfig) ([]*SubTaskConf
 		cfg.Name = c.Name
 		cfg.Mode = c.TaskMode
 		cfg.CaseSensitive = c.CaseSensitive
-		cfg.BinlogType = "local" // let's force syncer to replay local binlog.
+		cfg.BinlogType = c.BinlogType
 		cfg.MetaSchema = c.MetaSchema
 		cfg.RemoveMeta = c.RemoveMeta
 		cfg.DisableHeartbeat = c.DisableHeartbeat
