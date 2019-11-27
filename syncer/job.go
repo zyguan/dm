@@ -18,7 +18,7 @@ import (
 
 	"github.com/siddontang/go-mysql/mysql"
 
-	"github.com/pingcap/dm/pkg/gtid"
+	//"github.com/pingcap/dm/pkg/gtid"
 )
 
 type opType byte
@@ -70,7 +70,8 @@ type job struct {
 	retry        bool
 	pos          mysql.Position
 	currentPos   mysql.Position // exactly binlog position of current SQL
-	gtidSet      gtid.Set
+	gtidSet      string
+	currentGTIDSet string
 	ddlExecItem  *DDLExecItem
 	ddls         []string
 	traceID      string
@@ -82,11 +83,13 @@ func (j *job) String() string {
 	return fmt.Sprintf("tp: %s, sql: %s, args: %v, key: %s, ddls: %s, last_pos: %s, current_pos: %s, gtid:%v", j.tp, j.sql, j.args, j.key, j.ddls, j.pos, j.currentPos, j.gtidSet)
 }
 
-func newJob(tp opType, sourceSchema, sourceTable, targetSchema, targetTable, sql string, args []interface{}, key string, pos, cmdPos mysql.Position, currentGtidSet gtid.Set, traceID string) *job {
+func newJob(tp opType, sourceSchema, sourceTable, targetSchema, targetTable, sql string, args []interface{}, key string, pos, cmdPos mysql.Position, gtidSet, currentGTIDSet string, traceID string) *job {
+	/*
 	var gs gtid.Set
-	if currentGtidSet != nil {
-		gs = currentGtidSet.Clone()
+	if currentGTIDSet != nil {
+		gs = currentGTIDSet.Clone()
 	}
+	*/
 	return &job{
 		tp:           tp,
 		sourceSchema: sourceSchema,
@@ -98,23 +101,27 @@ func newJob(tp opType, sourceSchema, sourceTable, targetSchema, targetTable, sql
 		key:          key,
 		pos:          pos,
 		currentPos:   cmdPos,
-		gtidSet:      gs,
+		gtidSet:      gtidSet,
+		currentGTIDSet: currentGTIDSet,
 		retry:        true,
 		traceID:      traceID,
 	}
 }
 
-func newDDLJob(ddlInfo *shardingDDLInfo, ddls []string, pos, cmdPos mysql.Position, currentGtidSet gtid.Set, ddlExecItem *DDLExecItem, traceID string) *job {
+func newDDLJob(ddlInfo *shardingDDLInfo, ddls []string, pos, cmdPos mysql.Position, gtidSet, currentGTIDSet string, ddlExecItem *DDLExecItem, traceID string) *job {
+	/*
 	var gs gtid.Set
-	if currentGtidSet != nil {
-		gs = currentGtidSet.Clone()
+	if currentGTIDSet != nil {
+		gs = currentGTIDSet.Clone()
 	}
+	*/
 	j := &job{
 		tp:          ddl,
 		ddls:        ddls,
 		pos:         pos,
 		currentPos:  cmdPos,
-		gtidSet:     gs,
+		gtidSet:     gtidSet,
+		currentGTIDSet: currentGTIDSet,
 		ddlExecItem: ddlExecItem,
 		traceID:     traceID,
 	}
@@ -133,16 +140,19 @@ func newDDLJob(ddlInfo *shardingDDLInfo, ddls []string, pos, cmdPos mysql.Positi
 	return j
 }
 
-func newXIDJob(pos, cmdPos mysql.Position, currentGtidSet gtid.Set, traceID string) *job {
+func newXIDJob(pos, cmdPos mysql.Position, gtidSet, currentGTIDSet string, traceID string) *job {
+	/*
 	var gs gtid.Set
-	if currentGtidSet != nil {
-		gs = currentGtidSet.Clone()
+	if currentGTIDSet != nil {
+		gs = currentGTIDSet.Clone()
 	}
+	*/
 	return &job{
 		tp:         xid,
 		pos:        pos,
 		currentPos: cmdPos,
-		gtidSet:    gs,
+		gtidSet:    gtidSet,
+		currentGTIDSet: currentGTIDSet,
 		traceID:    traceID,
 	}
 }
@@ -151,11 +161,11 @@ func newFlushJob() *job {
 	return &job{tp: flush}
 }
 
-func newSkipJob(pos mysql.Position, currentGtidSet gtid.Set) *job {
+func newSkipJob(pos mysql.Position, currentGTIDSet string) *job {
 	return &job{
 		tp:      skip,
 		pos:     pos,
-		gtidSet: currentGtidSet,
+		gtidSet: currentGTIDSet,
 	}
 }
 

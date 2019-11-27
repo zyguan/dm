@@ -47,7 +47,7 @@ func (s *Syncer) setInitActiveRelayLog() error {
 		return terror.ErrRelayNoValidRelaySubDir.Generate()
 	}
 
-	checkPos := s.checkpoint.GlobalPoint()
+	checkPos, _ := s.checkpoint.GlobalPoint()
 	if checkPos.Compare(minCheckpoint) > 0 {
 		// continue from previous checkpoint
 		pos = checkPos

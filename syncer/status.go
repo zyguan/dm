@@ -39,7 +39,7 @@ func (s *Syncer) Status() interface{} {
 		s.tctx.L().Warn("fail to get master status", zap.Error(err))
 	}
 
-	syncerPos := s.checkpoint.FlushedGlobalPoint()
+	syncerPos, syncerGTIDSet := s.checkpoint.FlushedGlobalPoint()
 	if err != nil {
 		s.tctx.L().Warn("fail to get flushed global point", zap.Error(err))
 	}
@@ -49,6 +49,7 @@ func (s *Syncer) Status() interface{} {
 		RecentTps:    tps,
 		MasterBinlog: masterPos.String(),
 		SyncerBinlog: syncerPos.String(),
+		SyncerBinlogGtid: syncerGTIDSet,
 	}
 	if masterGTIDSet != nil { // masterGTIDSet maybe a nil interface
 		st.MasterBinlogGtid = masterGTIDSet.String()

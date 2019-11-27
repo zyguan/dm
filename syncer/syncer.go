@@ -466,7 +466,7 @@ func (s *Syncer) initShardingGroups() error {
 
 // IsFreshTask implements Unit.IsFreshTask
 func (s *Syncer) IsFreshTask() (bool, error) {
-	globalPoint := s.checkpoint.GlobalPoint()
+	globalPoint, _ := s.checkpoint.GlobalPoint()
 	return globalPoint.Compare(minCheckpoint) <= 0, nil
 }
 
@@ -618,9 +618,9 @@ func (s *Syncer) Process(ctx context.Context, pr chan pb.ProcessResult) {
 	}
 
 	// try to rollback checkpoints, if they already flushed, no effect
-	prePos := s.checkpoint.GlobalPoint()
+	prePos, _ := s.checkpoint.GlobalPoint()
 	s.checkpoint.Rollback()
-	currPos := s.checkpoint.GlobalPoint()
+	currPos, _ := s.checkpoint.GlobalPoint()
 	if prePos.Compare(currPos) != 0 {
 		s.tctx.L().Warn("something wrong with rollback global checkpoint", zap.Stringer("previous position", prePos), zap.Stringer("current position", currPos))
 	}
@@ -743,7 +743,7 @@ func (s *Syncer) addJob(job *job) error {
 	)
 	switch job.tp {
 	case xid:
-		s.saveGlobalPoint(job.pos)
+		s.saveGlobalPoint(job.pos, job.gtidSet)
 		return nil
 	case flush:
 		addedJobsTotal.WithLabelValues("flush", s.cfg.Name, adminQueueName).Inc()
@@ -787,16 +787,16 @@ func (s *Syncer) addJob(job *job) error {
 	switch job.tp {
 	case ddl:
 		// only save checkpoint for DDL and XID (see above)
-		s.saveGlobalPoint(job.pos)
+		s.saveGlobalPoint(job.pos, job.gtidSet)
 		if len(job.sourceSchema) > 0 {
-			s.checkpoint.SaveTablePoint(job.sourceSchema, job.sourceTable, job.pos)
+			s.checkpoint.SaveTablePoint(job.sourceSchema, job.sourceTable, job.pos, job.gtidSet)
 		}
 		// reset sharding group after checkpoint saved
 		s.resetShardingGroup(job.targetSchema, job.targetTable)
 	case insert, update, del:
 		// save job's current pos for DML events
 		if len(job.sourceSchema) > 0 {
-			s.checkpoint.SaveTablePoint(job.sourceSchema, job.sourceTable, job.currentPos)
+			s.checkpoint.SaveTablePoint(job.sourceSchema, job.sourceTable, job.currentPos, job.currentGTIDSet)
 		}
 	}
 
@@ -807,11 +807,12 @@ func (s *Syncer) addJob(job *job) error {
 	return nil
 }
 
-func (s *Syncer) saveGlobalPoint(globalPoint mysql.Position) {
+func (s *Syncer) saveGlobalPoint(globalPos mysql.Position, globalGTID string) {
 	if s.cfg.IsSharding {
-		globalPoint = s.sgk.AdjustGlobalPoint(globalPoint)
+		globalPos = s.sgk.AdjustGlobalPoint(globalPos)
 	}
-	s.checkpoint.SaveGlobalPoint(globalPoint)
+	// TODO: adjust global gtid set
+	s.checkpoint.SaveGlobalPoint(globalPos, globalGTID)
 }
 
 func (s *Syncer) resetShardingGroup(schema, table string) {
@@ -861,7 +862,9 @@ func (s *Syncer) flushCheckPoints() error {
 	s.tctx.L().Info("flushed checkpoint", zap.Stringer("checkpoint", s.checkpoint))
 
 	// update current active relay log after checkpoint flushed
-	err = s.updateActiveRelayLog(s.checkpoint.GlobalPoint())
+	// TODO: only when enable relay log do this
+	pos, _ := s.checkpoint.GlobalPoint()
+	err = s.updateActiveRelayLog(pos)
 	if err != nil {
 		return err
 	}
@@ -1056,11 +1059,12 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 	// we use currentPos to replace and skip binlog event of specified position and update table checkpoint in sharding ddl
 	// we use lastPos to update global checkpoint and table checkpoint
 	var (
-		currentPos = s.checkpoint.GlobalPoint() // also init to global checkpoint
-		lastPos    = s.checkpoint.GlobalPoint()
+		currentPos, currentGTIDSet = s.checkpoint.GlobalPoint() // also init to global checkpoint
+		lastPos, lastGTIDSet    = s.checkpoint.GlobalPoint()
 	)
-	s.tctx.L().Info("replicate binlog from checkpoint", zap.Stringer("checkpoint", lastPos))
+	s.tctx.L().Info("replicate binlog from checkpoint", zap.Stringer("pos", lastPos), zap.String("gtid set", lastGTIDSet))
 
+	// TODO: use gtid
 	s.streamer, err = s.streamerProducer.generateStreamer(lastPos)
 	if err != nil {
 		return err
@@ -1315,7 +1319,8 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 			s.tctx.L().Debug("", zap.String("event", "XID"), zap.Stringer("last position", lastPos), log.WrapStringerField("position", currentPos), log.WrapStringerField("gtid set", ev.GSet))
 			lastPos.Pos = e.Header.LogPos // update lastPos
 
-			job := newXIDJob(currentPos, currentPos, nil, traceID)
+			// TODO: use gtid
+			job := newXIDJob(currentPos, currentPos, "", "", traceID)
 			err = s.addJobFunc(job)
 			if err != nil {
 				return terror.Annotatef(err, "current pos %s", currentPos)
@@ -1705,7 +1710,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 			s.tctx.L().Info("replace ddls to preset ddls by sql operator in normal mode", zap.String("event", "query"), zap.Strings("preset ddls", appliedSQLs), zap.Strings("ddls", needHandleDDLs), zap.ByteString("raw statement", ev.Query), log.WrapStringerField("position", ec.currentPos))
 			needHandleDDLs = appliedSQLs // maybe nil
 		}
-		job := newDDLJob(nil, needHandleDDLs, *ec.lastPos, *ec.currentPos, nil, nil, *ec.traceID)
+		job := newDDLJob(nil, needHandleDDLs, *ec.lastPos, *ec.currentPos, "", "", nil,  *ec.traceID)
 		err = s.addJobFunc(job)
 		if err != nil {
 			return err
@@ -2142,7 +2147,8 @@ func (s *Syncer) reopen(cfg replication.BinlogSyncerConfig) (streamer.Streamer, 
 	}
 	// TODO: refactor to support relay
 	s.streamerProducer = &remoteBinlogReader{replication.NewBinlogSyncer(cfg), s.tctx, s.cfg.EnableGTID}
-	return s.streamerProducer.generateStreamer(s.checkpoint.GlobalPoint())
+	pos, _ := s.checkpoint.GlobalPoint()
+	return s.streamerProducer.generateStreamer(pos)
 }
 
 func (s *Syncer) renameShardingSchema(schema, table string) (string, string) {

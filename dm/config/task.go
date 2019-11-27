@@ -66,6 +66,7 @@ var (
 type Meta struct {
 	BinLogName string `yaml:"binlog-name"`
 	BinLogPos  uint32 `yaml:"binlog-pos"`
+	GTIDSet    string `yaml:"gtid-set"`
 }
 
 // Verify does verification on configs
