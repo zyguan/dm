@@ -11,14 +11,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package transformer
+package event
 
 import (
 	"github.com/pingcap/parser"
 	"github.com/siddontang/go-mysql/mysql"
 	"github.com/siddontang/go-mysql/replication"
 
-	"github.com/pingcap/dm/relay/common"
+	"github.com/pingcap/dm/pkg/utils"
 )
 
 const (
@@ -26,8 +26,8 @@ const (
 	ignoreReasonArtificialFlag = "artificial flag (0x0020) set"
 )
 
-// Result represents a transform result.
-type Result struct {
+// TransformResult represents a transform result.
+type TransformResult struct {
 	Ignore       bool          // whether the event should be ignored
 	IgnoreReason string        // why the transformer ignore the event
 	LogPos       uint32        // binlog event's End_log_pos or Position in RotateEvent
@@ -45,7 +45,7 @@ type Result struct {
 // NOTE: more features maybe moved from outer into Transformer later.
 type Transformer interface {
 	// Transform transforms a binlog event.
-	Transform(e *replication.BinlogEvent) Result
+	Transform(e *replication.BinlogEvent) TransformResult
 }
 
 // transformer implements Transformer interface.
@@ -61,8 +61,8 @@ func NewTransformer(parser2 *parser.Parser) Transformer {
 }
 
 // Transform implements Transformer.Transform.
-func (t *transformer) Transform(e *replication.BinlogEvent) Result {
-	result := Result{
+func (t *transformer) Transform(e *replication.BinlogEvent) TransformResult {
+	result := TransformResult{
 		LogPos: e.Header.LogPos,
 	}
 
@@ -73,7 +73,7 @@ func (t *transformer) Transform(e *replication.BinlogEvent) Result {
 		// NOTE: we need to get the first binlog filename from fake RotateEvent when using auto position
 	case *replication.QueryEvent:
 		// when RawModeEnabled not true, QueryEvent will be parsed.
-		if common.CheckIsDDL(string(ev.Query), t.parser2) {
+		if utils.CheckIsDDL(string(ev.Query), t.parser2) {
 			// we only update/save GTID for DDL/XID event
 			// if the query is something like `BEGIN`, we do not update/save GTID.
 			result.GTIDSet = ev.GSet

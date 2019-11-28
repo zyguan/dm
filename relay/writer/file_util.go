@@ -30,7 +30,7 @@ import (
 	"github.com/pingcap/dm/pkg/binlog/reader"
 	"github.com/pingcap/dm/pkg/gtid"
 	"github.com/pingcap/dm/pkg/terror"
-	"github.com/pingcap/dm/relay/common"
+	"github.com/pingcap/dm/pkg/utils"
 )
 
 // checkBinlogHeaderExist checks if the file has a binlog file header.
@@ -195,7 +195,7 @@ func getTxnPosGTIDs(filename string, p *parser.Parser) (int64, gtid.Set, error) 
 		// NOTE: only update pos/GTID set for DDL/XID to get an complete transaction.
 		switch ev := e.Event.(type) {
 		case *replication.QueryEvent:
-			isDDL := common.CheckIsDDL(string(ev.Query), p)
+			isDDL := utils.CheckIsDDL(string(ev.Query), p)
 			if isDDL {
 				if latestGSet != nil { // GTID may not be enabled in the binlog
 					err = latestGSet.Update(nextGTIDStr)

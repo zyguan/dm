@@ -213,7 +213,8 @@ type Syncer struct {
 
 	currentPosMu struct {
 		sync.RWMutex
-		currentPos mysql.Position // use to calc remain binlog size
+		currentPos     mysql.Position // use to calc remain binlog size
+		currentGTIDSet string
 	}
 
 	addJobFunc func(*job) error
@@ -1060,7 +1061,7 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 	// we use lastPos to update global checkpoint and table checkpoint
 	var (
 		currentPos, currentGTIDSet = s.checkpoint.GlobalPoint() // also init to global checkpoint
-		lastPos, lastGTIDSet    = s.checkpoint.GlobalPoint()
+		lastPos, lastGTIDSet       = s.checkpoint.GlobalPoint()
 	)
 	s.tctx.L().Info("replicate binlog from checkpoint", zap.Stringer("pos", lastPos), zap.String("gtid set", lastGTIDSet))
 
@@ -1172,6 +1173,7 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 	for {
 		s.currentPosMu.Lock()
 		s.currentPosMu.currentPos = currentPos
+		s.currentPosMu.currentGTIDSet = currentGTIDSet
 		s.currentPosMu.Unlock()
 
 		// fetch from sharding resync channel if needed, and redirect global
@@ -1271,6 +1273,8 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 			header:              e.Header,
 			currentPos:          &currentPos,
 			lastPos:             &lastPos,
+			currentGTIDSet:      currentGTIDSet,
+			lastGTIDSet:         lastGTIDSet,
 			shardingReSync:      shardingReSync,
 			latestOp:            &latestOp,
 			closeShardingResync: closeShardingResync,
@@ -1286,18 +1290,18 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 		case *replication.RotateEvent:
 			err = s.handleRotateEvent(ev, ec)
 			if err != nil {
-				return terror.Annotatef(err, "current pos %s", currentPos)
+				return terror.Annotatef(err, "current pos %s, gtid %s", currentPos, currentGTIDSet)
 			}
 		case *replication.RowsEvent:
 			err = s.handleRowsEvent(ev, ec)
 			if err != nil {
-				return terror.Annotatef(err, "current pos %s", currentPos)
+				return terror.Annotatef(err, "current pos %s, gtid %s", currentPos, currentGTIDSet)
 			}
 
 		case *replication.QueryEvent:
 			err = s.handleQueryEvent(ev, ec)
 			if err != nil {
-				return terror.Annotatef(err, "current pos %s", currentPos)
+				return terror.Annotatef(err, "current pos %s, gtid %s", currentPos, currentGTIDSet)
 			}
 
 		case *replication.XIDEvent:
@@ -1333,6 +1337,8 @@ type eventContext struct {
 	header              *replication.EventHeader
 	currentPos          *mysql.Position
 	lastPos             *mysql.Position
+	currentGTIDSet      string
+	lastGTIDSet         string
 	shardingReSync      *ShardingReSync
 	latestOp            *opType
 	closeShardingResync func() error
@@ -1429,7 +1435,7 @@ func (s *Syncer) handleRowsEvent(ev *replication.RowsEvent, ec eventContext) err
 	if ignore {
 		binlogSkippedEventsTotal.WithLabelValues("rows", s.cfg.Name).Inc()
 		// for RowsEvent, we should record lastPos rather than currentPos
-		return s.recordSkipSQLsPos(*ec.lastPos, nil)
+		return s.recordSkipSQLsPos(*ec.lastPos, ec.lastGTIDSet)
 	}
 
 	if s.cfg.IsSharding {
@@ -1534,7 +1540,7 @@ func (s *Syncer) handleRowsEvent(ev *replication.RowsEvent, ec eventContext) err
 		if keys != nil {
 			key = keys[i]
 		}
-		err = s.commitJob(*ec.latestOp, originSchema, originTable, table.schema, table.name, sqls[i], arg, key, true, *ec.lastPos, *ec.currentPos, nil, *ec.traceID)
+		err = s.commitJob(*ec.latestOp, originSchema, originTable, table.schema, table.name, sqls[i], arg, key, true, *ec.lastPos, *ec.currentPos, ec.lastGTIDSet, ec.currentGTIDSet, *ec.traceID)
 		if err != nil {
 			return err
 		}
@@ -1559,7 +1565,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 		binlogSkippedEventsTotal.WithLabelValues("query", s.cfg.Name).Inc()
 		s.tctx.L().Warn("skip event", zap.String("event", "query"), zap.String("statement", sql), zap.String("schema", usedSchema))
 		*ec.lastPos = *ec.currentPos // before record skip pos, update lastPos
-		return s.recordSkipSQLsPos(*ec.lastPos, nil)
+		return s.recordSkipSQLsPos(*ec.lastPos, ec.lastGTIDSet)
 	}
 	if !parseResult.isDDL {
 		// skipped sql maybe not a DDL (like `BEGIN`)
@@ -1688,7 +1694,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 	s.tctx.L().Info("prepare to handle ddls", zap.String("event", "query"), zap.Strings("ddls", needHandleDDLs), zap.ByteString("raw statement", ev.Query), log.WrapStringerField("position", ec.currentPos))
 	if len(needHandleDDLs) == 0 {
 		s.tctx.L().Info("skip event, need handled ddls is empty", zap.String("event", "query"), zap.ByteString("raw statement", ev.Query), log.WrapStringerField("position", ec.currentPos))
-		return s.recordSkipSQLsPos(*ec.lastPos, nil)
+		return s.recordSkipSQLsPos(*ec.lastPos, ec.lastGTIDSet)
 	}
 
 	if s.tracer.Enable() {
@@ -1710,7 +1716,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 			s.tctx.L().Info("replace ddls to preset ddls by sql operator in normal mode", zap.String("event", "query"), zap.Strings("preset ddls", appliedSQLs), zap.Strings("ddls", needHandleDDLs), zap.ByteString("raw statement", ev.Query), log.WrapStringerField("position", ec.currentPos))
 			needHandleDDLs = appliedSQLs // maybe nil
 		}
-		job := newDDLJob(nil, needHandleDDLs, *ec.lastPos, *ec.currentPos, "", "", nil,  *ec.traceID)
+		job := newDDLJob(nil, needHandleDDLs, *ec.lastPos, *ec.currentPos, "", "", nil, *ec.traceID)
 		err = s.addJobFunc(job)
 		if err != nil {
 			return err
@@ -1720,7 +1726,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 		for _, tbl := range targetTbls {
 			s.clearTables(tbl.Schema, tbl.Name)
 			// save checkpoint of each table
-			s.checkpoint.SaveTablePoint(tbl.Schema, tbl.Name, *ec.currentPos)
+			s.checkpoint.SaveTablePoint(tbl.Schema, tbl.Name, *ec.currentPos, ec.currentGTIDSet)
 		}
 
 		for _, table := range onlineDDLTableNames {
@@ -1790,7 +1796,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 		// for non-last sharding DDL's table, this checkpoint will be used to skip binlog event when re-syncing
 		// NOTE: when last sharding DDL executed, all this checkpoints will be flushed in the same txn
 		s.tctx.L().Info("save table checkpoint for source", zap.String("event", "query"), zap.String("source", source), zap.Stringer("start position", startPos), log.WrapStringerField("end position", ec.currentPos))
-		s.checkpoint.SaveTablePoint(ddlInfo.tableNames[0][0].Schema, ddlInfo.tableNames[0][0].Name, *ec.currentPos)
+		s.checkpoint.SaveTablePoint(ddlInfo.tableNames[0][0].Schema, ddlInfo.tableNames[0][0].Name, *ec.currentPos, ec.currentGTIDSet)
 		if !synced {
 			s.tctx.L().Info("source shard group is not synced", zap.String("event", "query"), zap.String("source", source), zap.Stringer("start position", startPos), log.WrapStringerField("end position", ec.currentPos))
 			return nil
@@ -1891,7 +1897,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 		s.tctx.L().Info("replace ddls to preset ddls by sql operator in shard mode", zap.String("event", "query"), zap.Strings("preset ddls", appliedSQLs), zap.Strings("ddls", needHandleDDLs), zap.ByteString("raw statement", ev.Query), zap.Stringer("start position", startPos), log.WrapStringerField("end position", ec.currentPos))
 		needHandleDDLs = appliedSQLs // maybe nil
 	}
-	job := newDDLJob(ddlInfo, needHandleDDLs, *ec.lastPos, *ec.currentPos, nil, ddlExecItem, *ec.traceID)
+	job := newDDLJob(ddlInfo, needHandleDDLs, *ec.lastPos, *ec.currentPos, ec.lastGTIDSet, ec.currentGTIDSet, ddlExecItem, *ec.traceID)
 	err = s.addJobFunc(job)
 	if err != nil {
 		return err
@@ -1910,12 +1916,12 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 	return nil
 }
 
-func (s *Syncer) commitJob(tp opType, sourceSchema, sourceTable, targetSchema, targetTable, sql string, args []interface{}, keys []string, retry bool, pos, cmdPos mysql.Position, gs gtid.Set, traceID string) error {
+func (s *Syncer) commitJob(tp opType, sourceSchema, sourceTable, targetSchema, targetTable, sql string, args []interface{}, keys []string, retry bool, pos, cmdPos mysql.Position, gs, cmdGs string, traceID string) error {
 	key, err := s.resolveCasuality(keys)
 	if err != nil {
 		return terror.ErrSyncerUnitResolveCasualityFail.Generate(err)
 	}
-	job := newJob(tp, sourceSchema, sourceTable, targetSchema, targetTable, sql, args, key, pos, cmdPos, gs, traceID)
+	job := newJob(tp, sourceSchema, sourceTable, targetSchema, targetTable, sql, args, key, pos, cmdPos, gs, cmdGs, traceID)
 	return s.addJobFunc(job)
 }
 
@@ -2096,7 +2102,7 @@ func (s *Syncer) closeDBs() {
 
 // record skip ddl/dml sqls' position
 // make newJob's sql argument empty to distinguish normal sql and skips sql
-func (s *Syncer) recordSkipSQLsPos(pos mysql.Position, gtidSet gtid.Set) error {
+func (s *Syncer) recordSkipSQLsPos(pos mysql.Position, gtidSet string) error {
 	job := newSkipJob(pos, gtidSet)
 	return s.addJobFunc(job)
 }
@@ -2400,7 +2406,8 @@ func (s *Syncer) needResync() bool {
 	// Currently, syncer doesn't handle Format_desc and Previous_gtids events. When binlog rotate to new file with only two events like above,
 	// syncer won't save pos to 194. Actually it save pos 4 to meta file. So We got a experience value of 194 - 4 = 190.
 	// If (mpos.Pos - spos.Pos) > 190, we could say that syncer is not up-to-date.
-	return utils.CompareBinlogPos(masterPos, s.checkpoint.GlobalPoint(), 190) == 1
+	syncerPos, _ := s.checkpoint.GlobalPoint()
+	return utils.CompareBinlogPos(masterPos, syncerPos, 190) == 1
 }
 
 // assume that reset master before switching to new master, and only the new master would write

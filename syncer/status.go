@@ -44,11 +44,11 @@ func (s *Syncer) Status() interface{} {
 		s.tctx.L().Warn("fail to get flushed global point", zap.Error(err))
 	}
 	st := &pb.SyncStatus{
-		TotalEvents:  total,
-		TotalTps:     totalTps,
-		RecentTps:    tps,
-		MasterBinlog: masterPos.String(),
-		SyncerBinlog: syncerPos.String(),
+		TotalEvents:      total,
+		TotalTps:         totalTps,
+		RecentTps:        tps,
+		MasterBinlog:     masterPos.String(),
+		SyncerBinlog:     syncerPos.String(),
 		SyncerBinlogGtid: syncerGTIDSet,
 	}
 	if masterGTIDSet != nil { // masterGTIDSet maybe a nil interface

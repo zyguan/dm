@@ -11,10 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package transformer
+package event
 
 import (
-	"testing"
 	"time"
 
 	"github.com/pingcap/check"
@@ -22,7 +21,6 @@ import (
 	"github.com/siddontang/go-mysql/mysql"
 	"github.com/siddontang/go-mysql/replication"
 
-	"github.com/pingcap/dm/pkg/binlog/event"
 	"github.com/pingcap/dm/pkg/gtid"
 )
 
@@ -30,16 +28,12 @@ var (
 	_ = check.Suite(&testTransformerSuite{})
 )
 
-func TestSuite(t *testing.T) {
-	check.TestingT(t)
-}
-
 type testTransformerSuite struct {
 }
 
 type Case struct {
 	event  *replication.BinlogEvent
-	result Result
+	result TransformResult
 }
 
 func (t *testTransformerSuite) TestTransform(c *check.C) {
@@ -60,11 +54,11 @@ func (t *testTransformerSuite) TestTransform(c *check.C) {
 	// RotateEvent
 	nextLogName := "mysql-bin.000123"
 	position := uint64(4)
-	ev, err := event.GenRotateEvent(header, latestPos, []byte(nextLogName), position)
+	ev, err := GenRotateEvent(header, latestPos, []byte(nextLogName), position)
 	c.Assert(err, check.IsNil)
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			LogPos:      uint32(position),
 			NextLogName: nextLogName,
 		},
@@ -72,11 +66,11 @@ func (t *testTransformerSuite) TestTransform(c *check.C) {
 
 	// fake RotateEvent with zero timestamp
 	header.Timestamp = 0
-	ev, err = event.GenRotateEvent(header, latestPos, []byte(nextLogName), position)
+	ev, err = GenRotateEvent(header, latestPos, []byte(nextLogName), position)
 	c.Assert(err, check.IsNil)
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			LogPos:      uint32(position),
 			NextLogName: nextLogName,
 		},
@@ -86,12 +80,12 @@ func (t *testTransformerSuite) TestTransform(c *check.C) {
 	// fake RotateEvent with zero logPos
 	fakeRotateHeader := replication.EventHeader{}
 	fakeRotateHeader = *header
-	ev, err = event.GenRotateEvent(&fakeRotateHeader, latestPos, []byte(nextLogName), position)
+	ev, err = GenRotateEvent(&fakeRotateHeader, latestPos, []byte(nextLogName), position)
 	c.Assert(err, check.IsNil)
 	ev.Header.LogPos = 0 // set to zero
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			LogPos:      uint32(position),
 			NextLogName: nextLogName,
 		},
@@ -99,12 +93,12 @@ func (t *testTransformerSuite) TestTransform(c *check.C) {
 
 	// QueryEvent for DDL
 	query := []byte("CREATE TABLE test_tbl (c1 INT)")
-	ev, err = event.GenQueryEvent(header, latestPos, 0, 0, 0, nil, schema, query)
+	ev, err = GenQueryEvent(header, latestPos, 0, 0, 0, nil, schema, query)
 	c.Assert(err, check.IsNil)
 	ev.Event.(*replication.QueryEvent).GSet = gtidSet.Origin() // set GTIDs manually
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			LogPos:      ev.Header.LogPos,
 			GTIDSet:     gtidSet.Origin(),
 			CanSaveGTID: true,
@@ -113,23 +107,23 @@ func (t *testTransformerSuite) TestTransform(c *check.C) {
 
 	// QueryEvent for non-DDL
 	query = []byte("BEGIN")
-	ev, err = event.GenQueryEvent(header, latestPos, 0, 0, 0, nil, schema, query)
+	ev, err = GenQueryEvent(header, latestPos, 0, 0, 0, nil, schema, query)
 	c.Assert(err, check.IsNil)
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			LogPos: ev.Header.LogPos,
 		},
 	})
 
 	// XIDEvent
 	xid := uint64(135)
-	ev, err = event.GenXIDEvent(header, latestPos, xid)
+	ev, err = GenXIDEvent(header, latestPos, xid)
 	c.Assert(err, check.IsNil)
 	ev.Event.(*replication.XIDEvent).GSet = gtidSet.Origin() // set GTIDs manually
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			LogPos:      ev.Header.LogPos,
 			GTIDSet:     gtidSet.Origin(),
 			CanSaveGTID: true,
@@ -140,7 +134,7 @@ func (t *testTransformerSuite) TestTransform(c *check.C) {
 	ev = &replication.BinlogEvent{Header: header, Event: &replication.GenericEvent{}}
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			LogPos: ev.Header.LogPos,
 		},
 	})
@@ -152,7 +146,7 @@ func (t *testTransformerSuite) TestTransform(c *check.C) {
 	ev.Header.EventType = replication.HEARTBEAT_EVENT
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			Ignore:       true,
 			IgnoreReason: ignoreReasonHeartbeat,
 			LogPos:       ev.Header.LogPos,
@@ -160,22 +154,22 @@ func (t *testTransformerSuite) TestTransform(c *check.C) {
 	})
 
 	// other event type without LOG_EVENT_ARTIFICIAL_F
-	ev, err = event.GenCommonGTIDEvent(mysql.MySQLFlavor, header.ServerID, latestPos, gtidSet)
+	ev, err = GenCommonGTIDEvent(mysql.MySQLFlavor, header.ServerID, latestPos, gtidSet)
 	c.Assert(err, check.IsNil)
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			LogPos: ev.Header.LogPos,
 		},
 	})
 
 	// other event type with LOG_EVENT_ARTIFICIAL_F
-	ev, err = event.GenCommonGTIDEvent(mysql.MySQLFlavor, header.ServerID, latestPos, gtidSet)
+	ev, err = GenCommonGTIDEvent(mysql.MySQLFlavor, header.ServerID, latestPos, gtidSet)
 	c.Assert(err, check.IsNil)
 	ev.Header.Flags |= replication.LOG_EVENT_ARTIFICIAL_F
 	cases = append(cases, Case{
 		event: ev,
-		result: Result{
+		result: TransformResult{
 			Ignore:       true,
 			IgnoreReason: ignoreReasonArtificialFlag,
 			LogPos:       ev.Header.LogPos,

@@ -34,6 +34,7 @@ import (
 	"github.com/pingcap/dm/dm/pb"
 	"github.com/pingcap/dm/dm/unit"
 	"github.com/pingcap/dm/pkg/binlog"
+	"github.com/pingcap/dm/pkg/binlog/event"
 	tcontext "github.com/pingcap/dm/pkg/context"
 	fr "github.com/pingcap/dm/pkg/func-rollback"
 	"github.com/pingcap/dm/pkg/log"
@@ -42,7 +43,6 @@ import (
 	"github.com/pingcap/dm/pkg/utils"
 	"github.com/pingcap/dm/relay/reader"
 	"github.com/pingcap/dm/relay/retry"
-	"github.com/pingcap/dm/relay/transformer"
 	"github.com/pingcap/dm/relay/writer"
 )
 
@@ -282,14 +282,14 @@ func (r *Relay) process(parentCtx context.Context) error {
 		return err
 	}
 
-	transformer2 := transformer.NewTransformer(parser2)
+	transformer := event.NewTransformer(parser2)
 
 	go r.doIntervalOps(parentCtx)
 
 	// handles binlog events with retry mechanism.
 	// it only do the retry for some binlog reader error now.
 	for {
-		err := r.handleEvents(parentCtx, reader2, transformer2, writer2)
+		err := r.handleEvents(parentCtx, reader2, transformer, writer2)
 		if err == nil {
 			return nil
 		} else if !readerRetry.Check(parentCtx, err) {
@@ -366,7 +366,7 @@ func (r *Relay) tryRecoverLatestFile(parser2 *parser.Parser) error {
 //   2. transform events
 //   3. write events into relay log files
 //   4. update metadata if needed
-func (r *Relay) handleEvents(ctx context.Context, reader2 reader.Reader, transformer2 transformer.Transformer, writer2 writer.Writer) error {
+func (r *Relay) handleEvents(ctx context.Context, reader2 reader.Reader, transformer event.Transformer, writer2 writer.Writer) error {
 	var (
 		_, lastPos  = r.meta.Pos()
 		_, lastGTID = r.meta.GTID()
@@ -412,7 +412,7 @@ func (r *Relay) handleEvents(ctx context.Context, reader2 reader.Reader, transfo
 
 		// 2. transform events
 		transformTimer := time.Now()
-		tResult := transformer2.Transform(e)
+		tResult := transformer.Transform(e)
 		binlogTransformDurationHistogram.Observe(time.Since(transformTimer).Seconds())
 		if len(tResult.NextLogName) > 0 && tResult.NextLogName > lastPos.Name {
 			lastPos = mysql.Position{

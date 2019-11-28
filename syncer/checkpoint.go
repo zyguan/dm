@@ -577,9 +577,9 @@ func (cp *RemoteCheckPoint) Load() error {
 // LoadMeta implements CheckPoint.LoadMeta
 func (cp *RemoteCheckPoint) LoadMeta() error {
 	var (
-		pos *mysql.Position
+		pos  *mysql.Position
 		gtid string
-		err error
+		err  error
 	)
 	switch cp.cfg.Mode {
 	case config.ModeAll:

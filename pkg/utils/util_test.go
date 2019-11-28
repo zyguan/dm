@@ -17,6 +17,7 @@ import (
 	"time"
 
 	. "github.com/pingcap/check"
+	"github.com/pingcap/parser"
 	"github.com/siddontang/go-mysql/mysql"
 )
 
@@ -169,4 +170,35 @@ func (t *testUtilsSuite) TestWaitSomething(c *C) {
 
 	c.Assert(WaitSomething(backoff, waitTime, f2), IsTrue)
 	c.Assert(count, Equals, 5)
+}
+
+func (t *testUtilsSuite) TestCheckIsDDL(c *C) {
+	var (
+		cases = []struct {
+			sql   string
+			isDDL bool
+		}{
+			{
+				sql:   "CREATE DATABASE test_is_ddl",
+				isDDL: true,
+			},
+			{
+				sql:   "BEGIN",
+				isDDL: false,
+			},
+			{
+				sql:   "INSERT INTO test_is_ddl.test_is_ddl_table VALUES (1)",
+				isDDL: false,
+			},
+			{
+				sql:   "INVAID SQL STATEMENT",
+				isDDL: false,
+			},
+		}
+		parser2 = parser.New()
+	)
+
+	for _, cs := range cases {
+		c.Assert(CheckIsDDL(cs.sql, parser2), Equals, cs.isDDL)
+	}
 }

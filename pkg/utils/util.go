@@ -21,8 +21,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pingcap/parser"
+	"github.com/pingcap/parser/ast"
 	"github.com/siddontang/go-mysql/mysql"
 
+	parserpkg "github.com/pingcap/dm/pkg/parser"
 	"github.com/pingcap/dm/pkg/terror"
 )
 
@@ -155,4 +158,28 @@ func WaitSomething(backoff int, waitTime time.Duration, fn func() bool) bool {
 // IsBuildInSkipDDL return true when checked sql that will be skipped for syncer
 func IsBuildInSkipDDL(sql string) bool {
 	return builtInSkipDDLPatterns.FindStringIndex(sql) != nil
+}
+
+// CheckIsDDL checks input SQL whether is a valid DDL statement
+func CheckIsDDL(sql string, p *parser.Parser) bool {
+	sql = TrimCtrlChars(sql)
+
+	if IsBuildInSkipDDL(sql) {
+		return false
+	}
+
+	// if parse error, treat it as not a DDL
+	stmts, err := parserpkg.Parse(p, sql, "", "")
+	if err != nil || len(stmts) == 0 {
+		return false
+	}
+
+	stmt := stmts[0]
+	switch stmt.(type) {
+	case ast.DDLNode:
+		return true
+	default:
+		// other thing this like `BEGIN`
+		return false
+	}
 }

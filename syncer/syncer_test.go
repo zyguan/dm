@@ -1326,8 +1326,11 @@ func (s *testSyncerSuite) TestSharding(c *C) {
 		syncer.Close()
 		c.Assert(syncer.isClosed(), IsTrue)
 
-		flushedGP := syncer.checkpoint.FlushedGlobalPoint().Pos
-		GP := syncer.checkpoint.GlobalPoint().Pos
+		flushedPos, _ := syncer.checkpoint.FlushedGlobalPoint()
+		flushedGP := flushedPos.Pos
+
+		globalPos, _ := syncer.checkpoint.GlobalPoint()
+		GP := globalPos.Pos
 		c.Assert(GP, Equals, flushedGP)
 
 		// check expectations for mock baseConn

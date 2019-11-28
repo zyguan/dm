@@ -41,7 +41,6 @@ import (
 	"github.com/pingcap/dm/pkg/utils"
 	"github.com/pingcap/dm/relay/reader"
 	"github.com/pingcap/dm/relay/retry"
-	"github.com/pingcap/dm/relay/transformer"
 	"github.com/pingcap/dm/relay/writer"
 )
 
@@ -290,10 +289,10 @@ func genBinlogEventsWithGTIDs(c *C, flavor string, previousGTIDSet, latestGTID1,
 func (t *testRelaySuite) TestHandleEvent(c *C) {
 	// NOTE: we can test metrics later.
 	var (
-		reader2      = &mockReader{}
-		transformer2 = transformer.NewTransformer(parser.New())
-		writer2      = &mockWriter{}
-		relayCfg     = &Config{
+		reader2     = &mockReader{}
+		transformer = event.NewTransformer(parser.New())
+		writer2     = &mockWriter{}
+		relayCfg    = &Config{
 			RelayDir: c.MkDir(),
 			Flavor:   gmysql.MariaDBFlavor,
 		}
@@ -325,7 +324,7 @@ func (t *testRelaySuite) TestHandleEvent(c *C) {
 		replication.ErrSyncClosed,
 		replication.ErrNeedSyncAgain,
 	} {
-		err := r.handleEvents(ctx, reader2, transformer2, writer2)
+		err := r.handleEvents(ctx, reader2, transformer, writer2)
 		c.Assert(errors.Cause(err), Equals, reader2.err)
 	}
 
@@ -336,12 +335,12 @@ func (t *testRelaySuite) TestHandleEvent(c *C) {
 	// writer return error
 	writer2.err = errors.New("writer error for testing")
 	// return with the annotated writer error
-	err := r.handleEvents(ctx, reader2, transformer2, writer2)
+	err := r.handleEvents(ctx, reader2, transformer, writer2)
 	c.Assert(errors.Cause(err), Equals, writer2.err)
 
 	// writer without error
 	writer2.err = nil
-	err = r.handleEvents(ctx, reader2, transformer2, writer2) // returned when ctx timeout
+	err = r.handleEvents(ctx, reader2, transformer, writer2) // returned when ctx timeout
 	c.Assert(errors.Cause(err), Equals, ctx.Err())
 	// check written event
 	c.Assert(writer2.latestEvent, Equals, reader2.result.Event)
@@ -356,7 +355,7 @@ func (t *testRelaySuite) TestHandleEvent(c *C) {
 
 	// write a QueryEvent with GTID sets
 	reader2.result.Event = queryEv
-	err = r.handleEvents(ctx2, reader2, transformer2, writer2)
+	err = r.handleEvents(ctx2, reader2, transformer, writer2)
 	c.Assert(errors.Cause(err), Equals, ctx.Err())
 	// check written event
 	c.Assert(writer2.latestEvent, Equals, reader2.result.Event)
@@ -374,7 +373,7 @@ func (t *testRelaySuite) TestHandleEvent(c *C) {
 		Event:  &replication.GenericEvent{}}
 	ctx4, cancel4 := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel4()
-	err = r.handleEvents(ctx4, reader2, transformer2, writer2)
+	err = r.handleEvents(ctx4, reader2, transformer, writer2)
 	c.Assert(errors.Cause(err), Equals, ctx.Err())
 	select {
 	case <-ctx4.Done():
@@ -387,7 +386,7 @@ func (t *testRelaySuite) TestHandleEvent(c *C) {
 	writer2.result.Ignore = true
 	ctx5, cancel5 := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel5()
-	err = r.handleEvents(ctx5, reader2, transformer2, writer2)
+	err = r.handleEvents(ctx5, reader2, transformer, writer2)
 	c.Assert(errors.Cause(err), Equals, ctx.Err())
 	select {
 	case <-ctx5.Done():
