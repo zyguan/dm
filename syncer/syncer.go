@@ -1308,6 +1308,11 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 			if shardingReSync != nil {
 				shardingReSync.currPos.Pos = e.Header.LogPos
 				lastPos = shardingReSync.currPos
+
+				shardingReSync.currGTIDSet = ev.GSet.String()
+				lastGTIDSet = shardingReSync.currGTIDSet
+
+				// TODO: compare gtid
 				if shardingReSync.currPos.Compare(shardingReSync.latestPos) >= 0 {
 					s.tctx.L().Info("re-replicate shard group was completed", zap.String("event", "XID"), zap.Reflect("re-shard", shardingReSync))
 					err = closeShardingResync()
@@ -1320,11 +1325,12 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 
 			latestOp = xid
 			currentPos.Pos = e.Header.LogPos
-			s.tctx.L().Debug("", zap.String("event", "XID"), zap.Stringer("last position", lastPos), log.WrapStringerField("position", currentPos), log.WrapStringerField("gtid set", ev.GSet))
-			lastPos.Pos = e.Header.LogPos // update lastPos
+			currentGTIDSet = ev.GSet.String()
+			s.tctx.L().Debug("", zap.String("event", "XID"), zap.Stringer("last position", lastPos), log.WrapStringerField("position", currentPos), zap.String("gtid set", currentGTIDSet))
+			lastPos.Pos = e.Header.LogPos  // update lastPos
+			lastGTIDSet = ev.GSet.String() // update lastGTIDSet
 
-			// TODO: use gtid
-			job := newXIDJob(currentPos, currentPos, "", "", traceID)
+			job := newXIDJob(currentPos, currentPos, currentGTIDSet, currentGTIDSet, traceID)
 			err = s.addJobFunc(job)
 			if err != nil {
 				return terror.Annotatef(err, "current pos %s", currentPos)

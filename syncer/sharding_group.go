@@ -761,8 +761,12 @@ func (k *ShardingGroupKeeper) LoadShardMeta() (map[string]*shardmeta.ShardingMet
 
 // ShardingReSync represents re-sync info for a sharding DDL group
 type ShardingReSync struct {
-	currPos      mysql.Position // current DDL's binlog pos, initialize to first DDL's pos
-	latestPos    mysql.Position // latest DDL's binlog pos
+	currPos   mysql.Position // current DDL's binlog pos, initialize to first DDL's pos
+	latestPos mysql.Position // latest DDL's binlog pos
+
+	currGTIDSet   string // current DDL's GTID set, initialize to first DDL's GTID set
+	latestGTIDSet string // latest DDL's GTID set
+
 	targetSchema string
 	targetTable  string
 	allResolved  bool
