@@ -20,6 +20,7 @@ function run() {
     run_dm_master $WORK_DIR/master $MASTER_PORT $cur/conf/dm-master.toml previous
     check_rpc_alive $cur/../bin/check_master_online 127.0.0.1:$MASTER_PORT
 
+
     echo "start DM task only"
     dmctl_start_task
 

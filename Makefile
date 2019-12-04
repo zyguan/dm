@@ -8,7 +8,7 @@ CURDIR   := $(shell pwd)
 GO       := GO111MODULE=on go
 GOBUILD  := CGO_ENABLED=0 $(GO) build
 GOTEST   := CGO_ENABLED=1 $(GO) test
-PACKAGES  := $$(go list ./... | grep -vE 'tests|cmd|vendor|pbmock')
+PACKAGES  := $$(go list ./dm/worker | grep -vE 'tests|cmd|vendor|pbmock')
 FILES    := $$(find . -name "*.go" | grep -vE "vendor")
 TOPDIRS  := $$(ls -d */ | grep -vE "vendor")
 SHELL    := /usr/bin/env bash
@@ -57,6 +57,7 @@ dmctl:
 test: unit_test integration_test
 
 unit_test:
+	echo $(GOTEST)
 	bash -x ./tests/wait_for_mysql.sh
 	mkdir -p $(TEST_DIR)
 	which $(FAILPOINT) >/dev/null 2>&1 || $(GOBUILD) -o $(FAILPOINT) github.com/pingcap/failpoint/failpoint-ctl
