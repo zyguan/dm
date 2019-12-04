@@ -1309,7 +1309,9 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 				shardingReSync.currPos.Pos = e.Header.LogPos
 				lastPos = shardingReSync.currPos
 
-				shardingReSync.currGTIDSet = ev.GSet.String()
+				if ev.GSet != nil {
+					shardingReSync.currGTIDSet = ev.GSet.String()
+				}
 				lastGTIDSet = shardingReSync.currGTIDSet
 
 				// TODO: compare gtid
@@ -1325,10 +1327,14 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 
 			latestOp = xid
 			currentPos.Pos = e.Header.LogPos
-			currentGTIDSet = ev.GSet.String()
+			if ev.GSet != nil {
+				currentGTIDSet = ev.GSet.String()
+			}
 			s.tctx.L().Debug("", zap.String("event", "XID"), zap.Stringer("last position", lastPos), log.WrapStringerField("position", currentPos), zap.String("gtid set", currentGTIDSet))
-			lastPos.Pos = e.Header.LogPos  // update lastPos
-			lastGTIDSet = ev.GSet.String() // update lastGTIDSet
+			lastPos.Pos = e.Header.LogPos // update lastPos
+			if ev.GSet != nil {
+				lastGTIDSet = ev.GSet.String() // update lastGTIDSet
+			}
 
 			job := newXIDJob(currentPos, currentPos, currentGTIDSet, currentGTIDSet, traceID)
 			err = s.addJobFunc(job)
@@ -1559,6 +1565,10 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 		Name: ec.lastPos.Name,
 		Pos:  ec.header.LogPos,
 	}
+	if ev.GSet != nil {
+		ec.currentGTIDSet = ev.GSet.String()
+	}
+
 	sql := strings.TrimSpace(string(ev.Query))
 	usedSchema := string(ev.Schema)
 	parseResult, err := s.parseDDLSQL(sql, ec.parser2, usedSchema)
@@ -1571,6 +1581,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 		binlogSkippedEventsTotal.WithLabelValues("query", s.cfg.Name).Inc()
 		s.tctx.L().Warn("skip event", zap.String("event", "query"), zap.String("statement", sql), zap.String("schema", usedSchema))
 		*ec.lastPos = *ec.currentPos // before record skip pos, update lastPos
+		ec.lastGTIDSet = ec.currentGTIDSet
 		return s.recordSkipSQLsPos(*ec.lastPos, ec.lastGTIDSet)
 	}
 	if !parseResult.isDDL {
@@ -1580,6 +1591,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 
 	if ec.shardingReSync != nil {
 		ec.shardingReSync.currPos.Pos = ec.header.LogPos
+		ec.shardingReSync.currGTIDSet = ec.currentGTIDSet
 		if ec.shardingReSync.currPos.Compare(ec.shardingReSync.latestPos) >= 0 {
 			s.tctx.L().Info("re-replicate shard group was completed", zap.String("event", "query"), zap.String("statement", sql), zap.Reflect("re-shard", ec.shardingReSync))
 			err2 := ec.closeShardingResync()
@@ -1591,6 +1603,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 			// as they have been added to sharding DDL sequence
 			// only update lastPos when the query is a real DDL
 			*ec.lastPos = ec.shardingReSync.currPos
+			ec.lastGTIDSet = ec.shardingReSync.currGTIDSet
 			s.tctx.L().Debug("skip event in re-replicating sharding group", zap.String("event", "query"), zap.String("statement", sql), zap.Reflect("re-shard", ec.shardingReSync))
 		}
 		return nil
@@ -1598,6 +1611,7 @@ func (s *Syncer) handleQueryEvent(ev *replication.QueryEvent, ec eventContext) e
 
 	s.tctx.L().Info("", zap.String("event", "query"), zap.String("statement", sql), zap.String("schema", usedSchema), zap.Stringer("last position", ec.lastPos), log.WrapStringerField("position", ec.currentPos), log.WrapStringerField("gtid set", ev.GSet))
 	*ec.lastPos = *ec.currentPos // update lastPos, because we have checked `isDDL`
+	ec.lastGTIDSet = ec.currentGTIDSet
 	*ec.latestOp = ddl
 
 	var (
