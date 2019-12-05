@@ -16,7 +16,6 @@ package syncer
 import (
 	"context"
 	"fmt"
-	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -56,11 +55,10 @@ import (
 var (
 	maxRetryCount = 100
 
-	retryTimeout    = 3 * time.Second
-	waitTime        = 10 * time.Millisecond
-	eventTimeout    = 1 * time.Minute
-	maxEventTimeout = 1 * time.Hour
-	statusTime      = 30 * time.Second
+	retryTimeout = 3 * time.Second
+	waitTime     = 10 * time.Millisecond
+
+	statusTime = 30 * time.Second
 
 	// MaxDDLConnectionTimeoutMinute also used by SubTask.ExecuteDDL
 	MaxDDLConnectionTimeoutMinute = 5
@@ -72,57 +70,6 @@ var (
 	defaultBucketCount = 8
 )
 
-// BinlogType represents binlog sync type
-type BinlogType uint8
-
-// binlog sync type
-const (
-	RemoteBinlog BinlogType = iota + 1
-	LocalBinlog
-)
-
-// StreamerProducer provides the ability to generate binlog streamer by StartSync()
-// but go-mysql StartSync() returns (struct, err) rather than (interface, err)
-// And we can't simplely use StartSync() method in SteamerProducer
-// so use generateStreamer to wrap StartSync() method to make *BinlogSyncer and *BinlogReader in same interface
-// For other implementations who implement StreamerProducer and Streamer can easily take place of Syncer.streamProducer
-// For test is easy to mock
-type StreamerProducer interface {
-	generateStreamer(pos mysql.Position) (streamer.Streamer, error)
-}
-
-// Read local relay log
-type localBinlogReader struct {
-	reader *streamer.BinlogReader
-}
-
-func (l *localBinlogReader) generateStreamer(pos mysql.Position) (streamer.Streamer, error) {
-	return l.reader.StartSync(pos)
-}
-
-// Read remote binlog
-type remoteBinlogReader struct {
-	reader     *replication.BinlogSyncer
-	tctx       *tcontext.Context
-	EnableGTID bool
-}
-
-func (r *remoteBinlogReader) generateStreamer(pos mysql.Position) (streamer.Streamer, error) {
-	defer func() {
-		lastSlaveConnectionID := r.reader.LastConnectionID()
-		r.tctx.L().Info("last slave connection", zap.Uint32("connection ID", lastSlaveConnectionID))
-	}()
-
-	// FIXME: can enable GTID
-	if r.EnableGTID {
-		// NOTE: our (per-table based) checkpoint does not support GTID yet
-		return nil, terror.ErrSyncerUnitRemoteSteamerWithGTID.Generate()
-	}
-
-	streamer, err := r.reader.StartSync(pos)
-	return streamer, terror.ErrSyncerUnitRemoteSteamerStartSync.Delegate(err)
-}
-
 // Syncer can sync your MySQL data to another MySQL database.
 type Syncer struct {
 	sync.RWMutex
@@ -132,15 +79,15 @@ type Syncer struct {
 	cfg     *config.SubTaskConfig
 	syncCfg replication.BinlogSyncerConfig
 
-	shardingSyncCfg replication.BinlogSyncerConfig // used by sharding group to re-consume DMLs
-	sgk             *ShardingGroupKeeper           // keeper to keep all sharding (sub) group in this syncer
-	ddlInfoCh       chan *pb.DDLInfo               // DDL info pending to sync, only support sync one DDL lock one time, refine if needed
-	ddlExecInfo     *DDLExecInfo                   // DDL execute (ignore) info
-	injectEventCh   chan *replication.BinlogEvent  // extra binlog event chan, used to inject binlog event into the main for loop
+	//shardingSyncCfg replication.BinlogSyncerConfig // used by sharding group to re-consume DMLs
+	sgk           *ShardingGroupKeeper          // keeper to keep all sharding (sub) group in this syncer
+	ddlInfoCh     chan *pb.DDLInfo              // DDL info pending to sync, only support sync one DDL lock one time, refine if needed
+	ddlExecInfo   *DDLExecInfo                  // DDL execute (ignore) info
+	injectEventCh chan *replication.BinlogEvent // extra binlog event chan, used to inject binlog event into the main for loop
 
-	streamerProducer StreamerProducer
 	binlogType       BinlogType
 	streamer         streamer.Streamer
+	streamerProducer StreamerProducer // removed
 
 	enableRelay bool
 
@@ -266,8 +213,8 @@ func NewSyncer(cfg *config.SubTaskConfig, enableRelay bool) *Syncer {
 		// for sharding group's config, we should use a different ServerID
 		// now, use 2**32 -1 - config's ServerID simply
 		// maybe we can refactor to remove RemoteBinlog support in DM
-		syncer.shardingSyncCfg = syncer.syncCfg
-		syncer.shardingSyncCfg.ServerID = math.MaxUint32 - syncer.syncCfg.ServerID
+		//syncer.shardingSyncCfg = syncer.syncCfg
+		//syncer.shardingSyncCfg.ServerID = math.MaxUint32 - syncer.syncCfg.ServerID
 		syncer.sgk = NewShardingGroupKeeper(syncer.tctx, cfg)
 		syncer.ddlInfoCh = make(chan *pb.DDLInfo, 1)
 		syncer.ddlExecInfo = NewDDLExecInfo()
