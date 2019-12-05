@@ -111,15 +111,19 @@ type StreamerController struct {
 }
 
 // NewStreamerController creates a new streamer controller
-func NewStreamerController(syncCfg replication.BinlogSyncerConfig, fromDB *UpStreamConn, binlogType BinlogType, localBinlogDir string, timezone *time.Location) (*StreamerController, error) {
-	return &StreamerController{
-		binlogType: binlogType,
-		//currentTp: binlogTp,
+func NewStreamerController(tctx tcontext.Context, syncCfg replication.BinlogSyncerConfig, fromDB *UpStreamConn, binlogType BinlogType, localBinlogDir string, timezone *time.Location, beginPos mysql.Position) (*StreamerController, error) {
+	var err error
+	streamerController := &StreamerController{
+		binlogType:     binlogType,
 		syncCfg:        syncCfg,
 		localBinlogDir: localBinlogDir,
 		timezone:       timezone,
 		fromDB:         fromDB,
-	}, nil
+	}
+
+	streamerController.ResetReplicationSyncer(tctx)
+	streamerController.streamer, err = streamerController.streamerProducer.generateStreamer(beginPos)
+	return streamerController, err
 }
 
 // ResetReplicationSyncer reset the replication
@@ -154,38 +158,40 @@ func (c *StreamerController) RedirectStreamer(tctx tcontext.Context, pos mysql.P
 }
 
 // GetEvent returns binlog event
-func (c *StreamerController) GetEvent(tctx tcontext.Context, syncedPosition mysql.Position) (*replication.BinlogEvent, error) {
+func (c *StreamerController) GetEvent(tctx tcontext.Context, syncedPosition mysql.Position) (event *replication.BinlogEvent, err error) {
 	ctx, cancel := context.WithTimeout(tctx.Context(), eventTimeout)
 	defer cancel()
 
-	e, err := c.streamer.GetEvent(ctx)
-	if err == context.Canceled {
-		tctx.L().Info("binlog replication main routine quit(context canceled)!", zap.Stringer("last position", syncedPosition))
-		return nil, nil
-	} else if err == context.DeadlineExceeded {
-		tctx.L().Info("deadline exceeded when fetching binlog event")
-		//c.eventTimeoutCounter += eventTimeout
-		//if c.eventTimeoutCounter < maxEventTimeout {
-		/*
-			err = c.flushJobs()
-			if err != nil {
-				return err
-			}
-			continue
-		*/
-	}
-
-	//c.eventTimeoutCounter = 0
-	if c.haveUnfetchedBinlog(tctx, syncedPosition) {
-		tctx.L().Info("timeout when fetching binlog event, there must be some problems with replica connection, try to re-connect")
-		err = c.reopenWithRetry(tctx, syncedPosition)
-		if err != nil {
-			return nil, err
+	for i := 0; i < maxRetryCount; i++ {
+		event, err = c.streamer.GetEvent(ctx)
+		if err == context.Canceled {
+			tctx.L().Info("binlog replication main routine quit(context canceled)!", zap.Stringer("last position", syncedPosition))
+			return nil, nil
+		} else if err == context.DeadlineExceeded {
+			tctx.L().Info("deadline exceeded when fetching binlog event")
+			//c.eventTimeoutCounter += eventTimeout
+			//if c.eventTimeoutCounter < maxEventTimeout {
+			/*
+				err = c.flushJobs()
+				if err != nil {
+					return err
+				}
+				continue
+			*/
 		}
-		//continue
+
+		//c.eventTimeoutCounter = 0
+		if c.haveUnfetchedBinlog(tctx, syncedPosition) {
+			tctx.L().Info("timeout when fetching binlog event, there must be some problems with replica connection, try to re-connect")
+			err = c.reopenWithRetry(tctx, syncedPosition)
+			if err != nil {
+				return nil, err
+			}
+			//continue
+		}
 	}
 
-	return e, err
+	return event, err
 }
 
 func (c *StreamerController) reopenWithRetry(tctx tcontext.Context, pos mysql.Position) error {
@@ -213,11 +219,13 @@ func (c *StreamerController) reopen(tctx tcontext.Context, pos mysql.Position) (
 			if err != nil {
 				return nil, err
 			}
+		case *localBinlogReader:
+			// do nothing
 		default:
 			return nil, terror.ErrSyncerUnitReopenStreamNotSupport.Generate(r)
 		}
 	}
-	// TODO: refactor to support relay
+
 	c.streamerProducer = &remoteBinlogReader{replication.NewBinlogSyncer(c.syncCfg), &tctx, false}
 	return c.streamerProducer.generateStreamer(pos)
 }
@@ -242,7 +250,7 @@ func (c *StreamerController) haveUnfetchedBinlog(logtctx tcontext.Context, synce
 	return utils.CompareBinlogPos(masterPos, syncedPosition, 190) == 1
 }
 
-func (c *StreamerController) closeBinlogSyncer(tctx tcontext.Context, binlogSyncer *replication.BinlogSyncer) error {
+func (c *StreamerController) closeBinlogSyncer(logtctx tcontext.Context, binlogSyncer *replication.BinlogSyncer) error {
 	if binlogSyncer == nil {
 		return nil
 	}
@@ -252,7 +260,7 @@ func (c *StreamerController) closeBinlogSyncer(tctx tcontext.Context, binlogSync
 	if lastSlaveConnectionID > 0 {
 		err := c.fromDB.killConn(lastSlaveConnectionID)
 		if err != nil {
-			tctx.L().Error("fail to kill last connection", zap.Uint32("connection ID", lastSlaveConnectionID), log.ShortError(err))
+			logtctx.L().Error("fail to kill last connection", zap.Uint32("connection ID", lastSlaveConnectionID), log.ShortError(err))
 			if !utils.IsNoSuchThreadError(err) {
 				return err
 			}
@@ -263,4 +271,19 @@ func (c *StreamerController) closeBinlogSyncer(tctx tcontext.Context, binlogSync
 
 func (c *StreamerController) getMasterStatus() (mysql.Position, gtid.Set, error) {
 	return c.fromDB.getMasterStatus(c.syncCfg.Flavor)
+}
+
+// Close closes streamer
+func (c *StreamerController) Close(tctx tcontext.Context) {
+	if c.streamerProducer != nil {
+		switch r := c.streamerProducer.(type) {
+		case *remoteBinlogReader:
+			// process remote binlog reader
+			c.closeBinlogSyncer(tctx, r.reader)
+			c.streamerProducer = nil
+		case *localBinlogReader:
+			// process local binlog reader
+			r.reader.Close()
+		}
+	}
 }

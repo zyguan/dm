@@ -85,9 +85,10 @@ type Syncer struct {
 	ddlExecInfo   *DDLExecInfo                  // DDL execute (ignore) info
 	injectEventCh chan *replication.BinlogEvent // extra binlog event chan, used to inject binlog event into the main for loop
 
-	binlogType       BinlogType
-	streamer         streamer.Streamer
-	streamerProducer StreamerProducer // removed
+	binlogType BinlogType
+	//streamer         streamer.Streamer
+	//streamerProducer StreamerProducer // removed
+	streamerController *StreamerController
 
 	enableRelay bool
 
@@ -418,29 +419,7 @@ func (s *Syncer) IsFreshTask() (bool, error) {
 	return globalPoint.Compare(minCheckpoint) <= 0, nil
 }
 
-func (s *Syncer) resetReplicationSyncer() {
-	// close old streamerProducer
-	if s.streamerProducer != nil {
-		switch t := s.streamerProducer.(type) {
-		case *remoteBinlogReader:
-			s.closeBinlogSyncer(t.reader)
-		case *localBinlogReader:
-			// TODO: close old local reader before creating a new one
-		default:
-			// some other producers such as mockStreamerProducer, should not re-create
-			return
-		}
-	}
-	// re-create new streamerProducer
-	if s.enableRelay {
-		s.streamerProducer = &localBinlogReader{streamer.NewBinlogReader(s.tctx, &streamer.BinlogReaderConfig{RelayDir: s.cfg.RelayDir, Timezone: s.timezone})}
-	} else {
-		s.streamerProducer = &remoteBinlogReader{replication.NewBinlogSyncer(s.syncCfg), s.tctx, s.cfg.EnableGTID}
-	}
-}
-
 func (s *Syncer) reset() {
-	s.resetReplicationSyncer()
 	// create new job chans
 	s.newJobChans(s.cfg.WorkerCount + 1)
 	// clear tables info
@@ -969,15 +948,6 @@ func (s *Syncer) sync(ctx *tcontext.Context, queueBucket string, db *DBConn, job
 	}
 }
 
-// redirectStreamer redirects binlog stream to given position
-func (s *Syncer) redirectStreamer(pos mysql.Position) error {
-	var err error
-	s.tctx.L().Info("reset global streamer", zap.Stringer("position", pos))
-	s.resetReplicationSyncer()
-	s.streamer, err = s.streamerProducer.generateStreamer(pos)
-	return err
-}
-
 // Run starts running for sync, we should guarantee it can rerun when paused.
 func (s *Syncer) Run(ctx context.Context) (err error) {
 	defer func() {
@@ -1012,8 +982,7 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 	)
 	s.tctx.L().Info("replicate binlog from checkpoint", zap.Stringer("pos", lastPos), zap.String("gtid set", lastGTIDSet))
 
-	// TODO: use gtid
-	s.streamer, err = s.streamerProducer.generateStreamer(lastPos)
+	s.streamerController, err = NewStreamerController(*s.tctx, s.syncCfg, s.fromDB, s.binlogType, s.cfg.RelayDir, s.timezone, currentPos)
 	if err != nil {
 		return err
 	}
@@ -1063,8 +1032,6 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 	s.lastTime.t = s.start
 	s.lastTime.Unlock()
 
-	tryReSync := true
-
 	// safeMode makes syncer reentrant.
 	// we make each operator reentrant to make syncer reentrant.
 	// `replace` and `delete` are naturally reentrant.
@@ -1086,13 +1053,13 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 	//    * compare last pos with current binlog's pos to determine whether re-sync completed
 	// 6. use the global streamer to continue the syncing
 	var (
-		shardingReSyncCh    = make(chan *ShardingReSync, 10)
-		shardingReSync      *ShardingReSync
-		savedGlobalLastPos  mysql.Position
-		latestOp            opType // latest job operation tp
-		eventTimeoutCounter time.Duration
-		traceSource         = fmt.Sprintf("%s.syncer.%s", s.cfg.SourceID, s.cfg.Name)
-		traceID             string
+		shardingReSyncCh   = make(chan *ShardingReSync, 10)
+		shardingReSync     *ShardingReSync
+		savedGlobalLastPos mysql.Position
+		latestOp           opType // latest job operation tp
+		//eventTimeoutCounter time.Duration
+		traceSource = fmt.Sprintf("%s.syncer.%s", s.cfg.SourceID, s.cfg.Name)
+		traceID     string
 	)
 
 	closeShardingResync := func() error {
@@ -1107,7 +1074,7 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 				return err2
 			}
 
-			err2 = s.redirectStreamer(nextPos)
+			err2 = s.streamerController.RedirectStreamer(*s.tctx, nextPos)
 			if err2 != nil {
 				return err2
 			}
@@ -1131,7 +1098,7 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 			savedGlobalLastPos = lastPos // save global last pos
 			lastPos = shardingReSync.currPos
 
-			err = s.redirectStreamer(shardingReSync.currPos)
+			err = s.streamerController.RedirectStreamer(*s.tctx, shardingReSync.currPos)
 			if err != nil {
 				return err
 			}
@@ -1156,54 +1123,20 @@ func (s *Syncer) Run(ctx context.Context) (err error) {
 					s.tctx.L().Info("set fetch binlog event timeout", zap.String("failpoint", "SyncerEventTimeout"), zap.Int("value", seconds))
 				}
 			})
+
+			cpPos, _ := s.checkpoint.GlobalPoint()
 			ctx2, cancel := context.WithTimeout(ctx, eventTimeout)
-			e, err = s.streamer.GetEvent(ctx2)
+			e, err = s.streamerController.GetEvent(*s.tctx.WithContext(ctx2), cpPos)
 			cancel()
+			if err != nil {
+				return err
+			}
 		}
 
 		startTime := time.Now()
-		if err == context.Canceled {
-			s.tctx.L().Info("binlog replication main routine quit(context canceled)!", zap.Stringer("last position", lastPos))
-			return nil
-		} else if err == context.DeadlineExceeded {
-			s.tctx.L().Info("deadline exceeded when fetching binlog event")
-			eventTimeoutCounter += eventTimeout
-			if eventTimeoutCounter < maxEventTimeout {
-				err = s.flushJobs()
-				if err != nil {
-					return err
-				}
-				continue
-			}
 
-			eventTimeoutCounter = 0
-			if s.needResync() {
-				s.tctx.L().Info("timeout when fetching binlog event, there must be some problems with replica connection, try to re-connect")
-				err = s.reopenWithRetry(s.syncCfg)
-				if err != nil {
-					return err
-				}
-			}
-			continue
-		}
-
-		if err != nil {
-			s.tctx.L().Error("fail to fetch binlog", log.ShortError(err))
-			// try to re-sync in gtid mode
-			if tryReSync && s.cfg.EnableGTID && isBinlogPurgedError(err) && s.cfg.AutoFixGTID {
-				time.Sleep(retryTimeout)
-				err = s.reSyncBinlog(s.syncCfg)
-				if err != nil {
-					return err
-				}
-				tryReSync = false
-				continue
-			}
-
-			return err
-		}
 		// get binlog event, reset tryReSync, so we can re-sync binlog while syncer meets errors next time
-		tryReSync = true
+		tryReSync := true
 		binlogPosGauge.WithLabelValues("syncer", s.cfg.Name).Set(float64(e.Header.LogPos))
 		index, err := binlog.GetFilenameIndex(lastPos.Name)
 		if err != nil {
@@ -2080,50 +2013,6 @@ func (s *Syncer) flushJobs() error {
 	return s.addJobFunc(job)
 }
 
-func (s *Syncer) reSyncBinlog(cfg replication.BinlogSyncerConfig) error {
-	err := s.retrySyncGTIDs()
-	if err != nil {
-		return err
-	}
-	// close still running sync
-	return s.reopenWithRetry(cfg)
-}
-
-func (s *Syncer) reopenWithRetry(cfg replication.BinlogSyncerConfig) error {
-	var err error
-	for i := 0; i < maxRetryCount; i++ {
-		s.streamer, err = s.reopen(cfg)
-		if err == nil {
-			return nil
-		}
-		if needRetryReplicate(err) {
-			s.tctx.L().Info("fail to retry open binlog streamer", log.ShortError(err))
-			time.Sleep(retryTimeout)
-			continue
-		}
-		break
-	}
-	return err
-}
-
-func (s *Syncer) reopen(cfg replication.BinlogSyncerConfig) (streamer.Streamer, error) {
-	if s.streamerProducer != nil {
-		switch r := s.streamerProducer.(type) {
-		case *remoteBinlogReader:
-			err := s.closeBinlogSyncer(r.reader)
-			if err != nil {
-				return nil, err
-			}
-		default:
-			return nil, terror.ErrSyncerUnitReopenStreamNotSupport.Generate(r)
-		}
-	}
-	// TODO: refactor to support relay
-	s.streamerProducer = &remoteBinlogReader{replication.NewBinlogSyncer(cfg), s.tctx, s.cfg.EnableGTID}
-	pos, _ := s.checkpoint.GlobalPoint()
-	return s.streamerProducer.generateStreamer(pos)
-}
-
 func (s *Syncer) renameShardingSchema(schema, table string) (string, string) {
 	if schema == "" {
 		return schema, table
@@ -2187,18 +2076,7 @@ func (s *Syncer) stopSync() {
 
 	// before re-write workflow for s.syncer, simply close it
 	// when resuming, re-create s.syncer
-
-	if s.streamerProducer != nil {
-		switch r := s.streamerProducer.(type) {
-		case *remoteBinlogReader:
-			// process remote binlog reader
-			s.closeBinlogSyncer(r.reader)
-			s.streamerProducer = nil
-		case *localBinlogReader:
-			// process local binlog reader
-			r.reader.Close()
-		}
-	}
+	s.streamerController.Close(*s.tctx)
 }
 
 func (s *Syncer) closeOnlineDDL() {
@@ -2212,25 +2090,6 @@ func (s *Syncer) removeHeartbeat() {
 	if s.cfg.EnableHeartbeat {
 		s.heartbeat.RemoveTask(s.cfg.Name)
 	}
-}
-
-func (s *Syncer) closeBinlogSyncer(syncer *replication.BinlogSyncer) error {
-	if syncer == nil {
-		return nil
-	}
-
-	lastSlaveConnectionID := syncer.LastConnectionID()
-	defer syncer.Close()
-	if lastSlaveConnectionID > 0 {
-		err := s.fromDB.killConn(lastSlaveConnectionID)
-		if err != nil {
-			s.tctx.L().Error("fail to kill last connection", zap.Uint32("connection ID", lastSlaveConnectionID), log.ShortError(err))
-			if !utils.IsNoSuchThreadError(err) {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // Pause pauses the process, and it can be resumed later
