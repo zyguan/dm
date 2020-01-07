@@ -90,6 +90,7 @@ func (t *testConfigSuite) TestConfig(c *check.C) {
 		peerURLs          = "http://127.0.0.1:8291"
 		advertisePeerURLs = "http://127.0.0.1:8291"
 		initialCluster    = "dm-master=http://127.0.0.1:8291"
+		discovery         = "https://discovery.etcd.io/some_id"
 		deployMap         = map[string]string{
 			"mysql-replica-01": "172.16.10.72:8262",
 			"mysql-replica-02": "172.16.10.73:8262",
@@ -141,6 +142,7 @@ func (t *testConfigSuite) TestConfig(c *check.C) {
 			c.Assert(cfg.AdvertisePeerUrls, check.Equals, advertisePeerURLs)
 			c.Assert(cfg.InitialCluster, check.Equals, initialCluster)
 			c.Assert(cfg.InitialClusterState, check.Equals, embed.ClusterStateFlagNew)
+			c.Assert(cfg.Discovery, check.Equals, discovery)
 			c.Assert(cfg.Join, check.Equals, "")
 			c.Assert(cfg.DeployMap, check.DeepEquals, deployMap)
 			c.Assert(cfg.String(), check.Matches, fmt.Sprintf("{.*master-addr\":\"%s\".*}", masterAddr))
@@ -247,8 +249,9 @@ func (t *testConfigSuite) TestGenEmbedEtcdConfig(c *check.C) {
 	c.Assert(etcdCfg.ACUrls, check.DeepEquals, []url.URL{{Scheme: "http", Host: "0.0.0.0:8261"}})
 	c.Assert(etcdCfg.LPUrls, check.DeepEquals, []url.URL{{Scheme: "http", Host: "127.0.0.1:8291"}})
 	c.Assert(etcdCfg.APUrls, check.DeepEquals, []url.URL{{Scheme: "http", Host: "127.0.0.1:8291"}})
-	c.Assert(etcdCfg.InitialCluster, check.DeepEquals, fmt.Sprintf("dm-master-%s=http://127.0.0.1:8291", hostname))
+	c.Assert(etcdCfg.InitialCluster, check.Equals, fmt.Sprintf("dm-master-%s=http://127.0.0.1:8291", hostname))
 	c.Assert(etcdCfg.ClusterState, check.Equals, embed.ClusterStateFlagExisting)
+	c.Assert(etcdCfg.Durl, check.Equals, "")
 
 	cfg2 := *cfg1
 	cfg2.MasterAddr = "127.0.0.1\n:8261"
@@ -280,6 +283,13 @@ func (t *testConfigSuite) TestGenEmbedEtcdConfig(c *check.C) {
 	etcdCfg, err = cfg4.genEmbedEtcdConfig()
 	c.Assert(err, check.IsNil)
 	c.Assert(etcdCfg.APUrls, check.DeepEquals, []url.URL{{Scheme: "http", Host: "172.100.8.8:8291"}})
+
+	cfg5 := *cfg1
+	cfg5.Discovery = "https://discovery.etcd.io/some_id"
+	etcdCfg, err = cfg5.genEmbedEtcdConfig()
+	c.Assert(err, check.IsNil)
+	c.Assert(etcdCfg.InitialCluster, check.Equals, "")
+	c.Assert(etcdCfg.Durl, check.Equals, cfg5.Discovery)
 }
 
 func (t *testConfigSuite) TestParseURLs(c *check.C) {

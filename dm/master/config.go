@@ -64,6 +64,7 @@ func NewConfig() *Config {
 
 	fs.StringVar(&cfg.Name, "name", "", "human-readable name for this DM-master member")
 	fs.StringVar(&cfg.DataDir, "data-dir", "", `path to the data directory (default "default.${name}")`)
+	fs.StringVar(&cfg.Discovery, "discovery", "", "discovery URL used to bootstrap the cluster")
 	fs.StringVar(&cfg.InitialCluster, "initial-cluster", "", fmt.Sprintf("initial cluster configuration for bootstrapping, e,g. dm-master=%s", defaultPeerUrls))
 	fs.StringVar(&cfg.PeerUrls, "peer-urls", defaultPeerUrls, "URLs for peer traffic")
 	fs.StringVar(&cfg.AdvertisePeerUrls, "advertise-peer-urls", "", `advertise URLs for peer traffic (default "${peer-urls}")`)
@@ -116,6 +117,7 @@ type Config struct {
 	DataDir             string `toml:"data-dir" json:"data-dir"`
 	PeerUrls            string `toml:"peer-urls" json:"peer-urls"`
 	AdvertisePeerUrls   string `toml:"advertise-peer-urls" json:"advertise-peer-urls"`
+	Discovery           string `toml:"discovery" json:"discovery"`
 	InitialCluster      string `toml:"initial-cluster" json:"initial-cluster"`
 	InitialClusterState string `toml:"initial-cluster-state" json:"initial-cluster-state"`
 	Join                string `toml:"join" json:"join"`   // cluster's client address (endpoints), not peer address
@@ -324,8 +326,13 @@ func (c *Config) genEmbedEtcdConfig() (*embed.Config, error) {
 		return nil, terror.ErrMasterGenEmbedEtcdConfigFail.Delegate(err, "invalid advertise-peer-urls")
 	}
 
-	cfg.InitialCluster = c.InitialCluster
-	cfg.ClusterState = c.InitialClusterState
+	if c.Discovery == "" {
+		cfg.InitialCluster = c.InitialCluster
+		cfg.ClusterState = c.InitialClusterState
+	} else {
+		cfg.InitialCluster = ""
+		cfg.Durl = c.Discovery
+	}
 
 	// use zap as the logger for embed etcd
 	// NOTE: `genEmbedEtcdConfig` can only be called after logger initialized.

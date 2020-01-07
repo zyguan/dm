@@ -22,6 +22,9 @@ advertise-peer-urls = "http://127.0.0.1:8291"
 # initial cluster configuration for bootstrapping, e,g. dm-master=http://127.0.0.1:8291
 initial-cluster = "dm-master=http://127.0.0.1:8291"
 
+# discovery URL used to bootstrap the cluster
+discovery = "https://discovery.etcd.io/some_id"
+
 # Join to an existing DM-master cluster, a string of existing cluster's endpoints.
 join = ""
 
